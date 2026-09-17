@@ -8,6 +8,9 @@
 # Output goes to .\dist\.
 #
 # Notes:
+#   * bridge.py lives in the lingofuse\ subpackage. The script is intended
+#     to be run from the src\ directory, so the source path is
+#     .\lingofuse\bridge.py.
 #   * bridge.py depends on Flask. Flask's Jinja2 dependency ships
 #     templates and its templating engine loads them at runtime, so
 #     --collect-all flask and --collect-all jinja2 are required.
@@ -23,11 +26,10 @@
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Test-Path ".\bridge.py")) {
-    Write-Host "[FATAL] bridge.py not found in the current directory." -ForegroundColor Red
-    Write-Host "        bridge.py lives in the lingofuse\ subpackage. If this" -ForegroundColor Red
-    Write-Host "        script is being run from src\, verify that the working" -ForegroundColor Red
-    Write-Host "        tree matches the expected layout." -ForegroundColor Red
+if (-not (Test-Path ".\lingofuse\bridge.py")) {
+    Write-Host "[FATAL] lingofuse\bridge.py not found in the current directory." -ForegroundColor Red
+    Write-Host "        Run this script from the src\ directory that contains" -ForegroundColor Red
+    Write-Host "        the lingofuse\ subpackage." -ForegroundColor Red
     exit 1
 }
 
@@ -53,7 +55,7 @@ $common_args = @(
     "--hidden-import", "requests"
 )
 
-$full_args = $common_args + @("bridge.py")
+$full_args = $common_args + @("lingofuse\bridge.py")
 Write-Host "  pyinstaller $($full_args -join ' ')" -ForegroundColor DarkGray
 
 $ok = $false
