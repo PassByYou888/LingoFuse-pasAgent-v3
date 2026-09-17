@@ -57,7 +57,7 @@ Pascal 生态中已有多个 AI 智能体方案，它们在定位和适用场景
 | **多轮工具循环** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **会话持久化** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **🌐 多模态（Multimodal）** | ✅ **v3 新增** | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **129+ 后端兼容** | ✅ | ❌ | 有限 | ✅ | ❌ | ❌ |
+| **250+ 后端兼容** | ✅ | ❌ | 有限 | ✅ | ❌ | ❌ |
 | **预编译包** | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | **许可证** | **MIT** | 开源 | Apache 2.0 | 开源 | 开源 | 开源 |
 
@@ -141,9 +141,9 @@ flowchart LR
 
 ---
 
-## 🧩 五大核心组件
+## 🧩 四大核心应用组件 + 一个辅助工具
 
-pasAgent v3 由 **5 个应用层组件**支撑起完整的"AI 调用 Pascal 工具"闭环。
+pasAgent v3 采用 **"四大核心应用组件 + 一个辅助工具"** 的架构叙事：
 
 ### 🌟 第一梯队：应用层组件（4 个）
 
@@ -152,7 +152,7 @@ pasAgent v3 由 **5 个应用层组件**支撑起完整的"AI 调用 Pascal 工�
 | 1 | **[`mcp_api_tool`](src/mcp_api_tool.py)** | **MCP 协议网关**（路径 A） | 客户端**原生支持 MCP**（LM Studio / Claude Desktop / Continue.dev） |
 | 2 | **[`llm_proxy_tool`](src/llm_proxy_tool.py)**（LTB） | **LLM 工具桥**（路径 B） | 客户端**不支持 MCP**，服务端**代管工具执行**，客户端零改动 |
 | 3 | **[`llm_proxy`](src/llm_proxy.py)** | **纯文本转发代理** | 只需对话，**不需要工具** |
-| 4 | **[`llm_client`](Pascal_Integration_Guide.md)** | **Pascal 客户端 SDK** | 自研 Pascal 客户端，直接控制协议 |
+| 4 | **[`llm_client_v3`](src/llm_client_v3.pas)** | **Pascal 客户端 SDK**（含 GUI 演示 `llm_tool_v3.exe`） | 自研 Pascal 客户端，直接控制协议 |
 
 ### 🛠️ 第二梯队：辅助验证工具（1 个）
 
@@ -172,6 +172,7 @@ pasAgent v3 由 **5 个应用层组件**支撑起完整的"AI 调用 Pascal 工�
 | **[`mcp_api_proxy`](src/mcp_api_proxy.py)** | MCP stdio 调试代理 | 排查 MCP 握手 |
 | **[`bridge`](src/lingofuse/bridge.py)** | HTTP 桥接网关 | 让浏览器 / Node / PHP 访问 |
 | **[`llm_test`](src/llm_test.py)** | 命令行 REPL 测试客户端 | 调试 LLM 服务 |
+| **[`llm_tool_v3`](src/llm_tool_v3.lpr)** | **Pascal GUI 演示客户端** | 演示 `llm_client_v3.pas` 完整用法：多会话 / 流式输出 / 多模态 |
 | **[`HealthCheck`](src/CreateHealthCheck/HealthCheck.lpr)** | 环境健康检查 | 首次部署验证 |
 
 ---
@@ -319,7 +320,7 @@ flowchart LR
 
 **关键特征**：
 - 无状态转发，`set_system_message` **明确拒绝**
-- 支持 **129+ OpenAI 兼容后端**（LM Studio / Ollama / vLLM / DeepSeek / OpenRouter / Groq / 智谱 / Moonshot / …）
+- 支持 **250+ OpenAI 兼容后端**（LM Studio / Ollama / vLLM / DeepSeek / OpenRouter / Groq / 智谱 / Moonshot / …）
 - 客户端代码一行不改，切换后端只改 `--backend-url`
 
 **文档** → **[src/LingoFuse_LLM_Proxy_CLI_Guide.md](src/LingoFuse_LLM_Proxy_CLI_Guide.md)**
@@ -329,12 +330,12 @@ flowchart LR
 
 ### 目的 4：自研 Pascal 客户端 / 开发 SDK
 
-**用 [`llm_client`](Pascal_Integration_Guide.md)（Pascal 版）** —— Pascal 客户端 SDK，直接与 LingoFuse LLM 服务对话。
+**用 [`llm_client_v3`](src/llm_client_v3.pas)（Pascal 版）** —— Pascal 客户端 SDK，直接与 LingoFuse LLM 服务对话。GUI 演示见 [`llm_tool_v3`](src/llm_tool_v3.lpr)。
 
 ```mermaid
 flowchart LR
     subgraph CLIENT["🅿️ Pascal 客户端"]
-        C1["llm_client.pas<br/>（LingoFuse 核心仓库）"]
+        C1["llm_client_v3.pas<br/>（本仓库 src/ 目录）"]
     end
 
     subgraph SERVERS["🎯 三种 LLM 服务端（选一）"]
@@ -355,7 +356,7 @@ flowchart LR
 >
 > Python **天生就能接入智能体生态**——LangChain、LlamaIndex、OpenAI SDK、Anthropic SDK 等都是 Python 原生，直接用即可，**不需要绕道 LingoFuse**。
 >
-> 而 **Pascal 生态缺乏这样的基础设施**，所以 pasAgent 为 Pascal 提供了 `llm_client.pas` 作为标准客户端 SDK。
+> 而 **Pascal 生态缺乏这样的基础设施**，所以 pasAgent 为 Pascal 提供了 `llm_client_v3.pas` 作为标准客户端 SDK。
 
 **关键特征**：
 - **同时兼容 Delphi 7+ 和 FPC 3.0+**
@@ -383,7 +384,7 @@ flowchart LR
 
 **关键特征**：
 - **完全离线**——不需要联网、不需要外部 API、不需要 LM Studio
-- **可嵌入**——你可以在自己的 Pascal 项目里只加载 `llm_service` + `llm_client`，就得到一个"本地 LLM 小工具"
+- **可嵌入**——你可以在自己的 Pascal 项目里只加载 `llm_service` + `llm_client_v3`，就得到一个"本地 LLM 小工具"
 - **兼容 P2P 通信**——通过 LingoFuse 服务网格，天然支持跨进程、跨机器
 
 **典型用途**：
@@ -393,7 +394,7 @@ flowchart LR
 | **离线环境** | 内网、无外网访问的工业现场 |
 | **隐私敏感** | 数据不能出本地，必须全程离线 |
 | **快速验证** | 检验某个 GGUF 模型是否适合你的任务 |
-| **嵌入自研项目** | 只引入 `llm_service` + `llm_client`，作为你的"AI 助手"模块 |
+| **嵌入自研项目** | 只引入 `llm_service` + `llm_client_v3`，作为你的"AI 助手"模块 |
 
 > 💡 **`llm_service` 是辅助验证工具，不是应用层核心**。生产环境更推荐用 `llm_proxy` / `llm_proxy_tool` 转发到 LM Studio 等成熟后端；但如果你需要**完全离线**或**深度嵌入**，`llm_service` 是最佳选择。
 
@@ -414,12 +415,12 @@ flowchart TB
         U5["本地 LLM 小工具"]
     end
 
-    subgraph Entrances["🚪 五大核心组件"]
+    subgraph Entrances["🚪 四大核心应用组件 + 一个辅助工具"]
         E1["🌉 mcp_api_tool<br/>路径 A"]
         E2["🔴 llm_proxy_tool<br/>路径 B"]
         E3["🟣 llm_proxy"]
-        E4["📦 llm_client<br/>（Pascal）"]
-        E5["🟢 llm_service<br/>（本地推理）"]
+        E4["📦 llm_client_v3<br/>（Pascal SDK）"]
+        E5["🟢 llm_service<br/>（本地推理·辅助工具）"]
     end
 
     subgraph Beacon["📡 公共基础设施"]
@@ -503,10 +504,10 @@ flowchart TB
   --mcp-tool-provider-app agent_main_app
 ```
 
-**客户端只需**：
+**客户端只需**（SDK 见 [`src/llm_client_v3.pas`](src/llm_client_v3.pas)）：
 
 ```pascal
-// Pascal 客户端（llm_client.pas）
+// Pascal 客户端（llm_client_v3.pas）
 LLM := TLLMClient.Create('LLM_Service', 'ipc:llm_service', 10000);
 LLM.OnChunk := Do_LLM_Chunk;
 if not LLM.Connect(err) then Exit;
@@ -541,7 +542,7 @@ if not LLM.Generate('5 加 7 等于几？', '', sid, err) then Exit;
 | **[`mcp_api_tool`](src/mcp_api_tool.py)** | 🌉 **MCP 协议网关**（路径 A） | 用 MCP 客户端的你 |
 | **[`llm_proxy_tool`](src/llm_proxy_tool.py)** | 🔴 **LLM 工具桥**（路径 B，服务端代管工具） | 客户端不支持 MCP 的你 |
 | **[`llm_proxy`](src/llm_proxy.py)** | 🟣 **纯文本转发代理** | 只用对话的你 |
-| **[`llm_client`](Pascal_Integration_Guide.md)** | 📦 **Pascal 客户端 SDK** | 自研 Pascal 客户端的你 |
+| **[`llm_client_v3`](src/llm_client_v3.pas)** | 📦 **Pascal 客户端 SDK**（含 GUI 演示 `llm_tool_v3`） | 自研 Pascal 客户端的你 |
 | **[`llm_service`](src/llm_service.py)** | 🟢 **本地推理服务**（可封装成小工具） | 断网 / 验证模型 / 深度嵌入的你 |
 
 ### 开发工具
@@ -554,6 +555,7 @@ if not LLM.Generate('5 加 7 等于几？', '', sid, err) then Exit;
 | **[`mcp_api_proxy`](src/mcp_api_proxy.py)** | 🕵️ **MCP stdio 调试代理** | 排查 MCP 握手的你 |
 | **[`bridge`](src/lingofuse/bridge.py)** | 🌐 **HTTP 桥接网关** | Web 生态的你 |
 | **[`llm_test`](src/llm_test.py)** | 🧪 **命令行 REPL** | 调试 LLM 的你 |
+| **[`llm_tool_v3`](src/llm_tool_v3.lpr)** | 🖼️ **Pascal GUI 演示客户端** | 学习 SDK 用法的你 |
 | **[`HealthCheck`](src/CreateHealthCheck/HealthCheck.lpr)** | ✅ **环境健康检查** | 首次部署的你 |
 
 ---
@@ -569,7 +571,7 @@ flowchart TB
     end
 
     subgraph Src["src/"]
-        S1["🅿️ Pascal<br/>pascal_agent_service / pascal_agent_api<br/>lingofuse_helper / lingofuse_import"]
+        S1["🅿️ Pascal<br/>pascal_agent_service / pascal_agent_api<br/>lingofuse_helper / lingofuse_import<br/>llm_client_v3 / llm_tool_v3"]
         S2["🌉 MCP 网关<br/>mcp_api_tool.py / mcp_api_proxy.py"]
         S3["🔧 中间件<br/>language_middleware.py / generate_agent_json.py"]
         S4["🧠 LLM<br/>llm_service.py / llm_proxy.py<br/>llm_proxy_tool.py / llm_test.py"]
@@ -593,6 +595,8 @@ flowchart TB
 - **[src/pascal_agent_api.lpr](src/pascal_agent_api.lpr)** —— 算术工具示例，你的项目原型
 - **[src/pascal_agent_service.lpr](src/pascal_agent_service.lpr)** —— 信标源码
 - **[src/lingofuse_helper.pas](src/lingofuse_helper.pas)** —— 写工具时的辅助函数
+- **[src/llm_client_v3.pas](src/llm_client_v3.pas)** —— Pascal 客户端 SDK
+- **[src/llm_tool_v3.lpr](src/llm_tool_v3.lpr)** —— SDK 的 GUI 演示程序
 - **[src/lingofuse/](src/lingofuse/)** —— LingoFuse Python 绑定包
 - **[zCore/src/Z.Core.pas](zCore/src/Z.Core.pas)** 等 —— 编译依赖的 Z 框架
 
@@ -604,7 +608,7 @@ flowchart TB
 
 | 文档 | 说明 |
 |------|------|
-| **[readme.md](readme.md)** | **本文档**——项目总览与五大核心组件 |
+| **[readme.md](readme.md)** | **本文档**——项目总览与四大核心应用组件 |
 | **[Pascal_Integration_Guide.md](Pascal_Integration_Guide.md)** | **Pascal 开发者切入指南**——推荐起点 |
 | **[NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)** | 推荐模型下载与部署 |
 | **[Build_Guide.md](Build_Guide.md)** | 编译指南（Pascal + Python 组件） |
@@ -616,10 +620,10 @@ flowchart TB
 
 | 文档 | 说明 |
 |------|------|
-| **[src/LingoFuse_LLM_Ecosystem_User_Guide.md](src/LingoFuse_LLM_Ecosystem_User_Guide.md)** | **生态总览**——五大核心组件、两条路径、能力发现机制 |
+| **[src/LingoFuse_LLM_Ecosystem_User_Guide.md](src/LingoFuse_LLM_Ecosystem_User_Guide.md)** | **生态总览**——四大核心应用组件、两条路径、能力发现机制 |
 | **[src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)** | 🔴 **LTB 命令行手册**（路径 B 核心） |
 | **[src/LingoFuse_LLM_Proxy_CLI_Guide.md](src/LingoFuse_LLM_Proxy_CLI_Guide.md)** | 🟣 **纯转发代理命令行手册** |
-| **[src/LingoFuse_LLM_Proxy_Compatibility_Guide.md](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md)** | **129+ 后端兼容清单**（LTB 亦适用） |
+| **[src/LingoFuse_LLM_Proxy_Compatibility_Guide.md](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md)** | **250+ 后端兼容清单**（LTB 亦适用） |
 | **[src/LingoFuse_LLM_Pitfalls_For_AI.md](src/LingoFuse_LLM_Pitfalls_For_AI.md)** | **踩坑大全**——症状 / 根因 / 正确做法 |
 | **[src/LingoFuse_LLM_Service_CLI_guide.md](src/LingoFuse_LLM_Service_CLI_guide.md)** | 🟢 **本地推理服务命令行手册** |
 | **[src/LingoFuse_LLM_Service_Work_Summary.md](src/LingoFuse_LLM_Service_Work_Summary.md)** | LLM 工具链版本演进与架构决策 |
@@ -658,7 +662,14 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 # 然后将 LingoFuse/Binary 目录加入系统 PATH
 ```
 
-> **提示**：预编译包已内置所需动态库，**无需单独安装**。
+> **提示**：预编译包已内置所需动态库，**无需单独安装**。预编译包内包含：
+>
+> | 类别 | 文件 |
+> |------|------|
+> | LingoFuse 核心 | `LingoFuse32.dll` / `LingoFuse64.dll` |
+> | IPC 依赖 | `z_ipc_32.dll` / `z_ipc_64.dll`（及调试版 `z_ipc_32d.dll` / `z_ipc_64d.dll`） |
+> | 内存分配器 | `mimalloc32.dll` / `mimalloc64.dll` / `mimalloc-redirect.dll` / `mimalloc-redirect32.dll` |
+> | 应用 EXE | `mcp_api_tool.exe` / `llm_proxy_tool.exe` / `llm_proxy.exe` / `llm_client_v3`（GUI 为 `llm_tool_v3.exe`） / `llm_service.exe` / `llm_test.exe` / `pascal_agent_service.exe` / `pascal_agent_api.exe` / `mcp_api_proxy.exe` / `bridge.exe` / `code_decl_to_mcp.exe` / `HealthCheck.exe` |
 
 ### ⚠️ 首次运行缺少 DLL？
 
@@ -696,8 +707,8 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 | 我的客户端不支持 MCP，怎么办？ | **用 [`llm_proxy_tool`](src/llm_proxy_tool.py)（路径 B）**，服务端代管工具调用 |
 | 我的客户端支持 MCP，怎么用？ | **用 [`mcp_api_tool`](src/mcp_api_tool.py)（路径 A）** |
 | 我只要对话，不要工具 | **用 [`llm_proxy`](src/llm_proxy.py)** |
-| 我想自己写 Pascal 客户端 | **用 [`llm_client`](Pascal_Integration_Guide.md) SDK** |
-| 我想把 LLM 塞进自己的项目 | **用 [`llm_service`](src/llm_service.py) + `llm_client`**，就是一个本地 LLM 小工具 |
+| 我想自己写 Pascal 客户端 | **用 [`llm_client_v3`](src/llm_client_v3.pas) SDK** |
+| 我想把 LLM 塞进自己的项目 | **用 [`llm_service`](src/llm_service.py) + `llm_client_v3`**，就是一个本地 LLM 小工具 |
 | 有 Python 客户端吗？ | **没有**——Python 天生能接智能体生态（LangChain / OpenAI SDK / …），不需要绕道 |
 | 代码生成器生成什么？ | **Pascal + Python 两种工具提供者**——见 [code_generate_mcp.md](code_generate_mcp.md) |
 | 需要联网吗？ | **不需要**（`llm_service` 完全离线）。用 `llm_proxy` / `llm_proxy_tool` 转发云端 API 时需联网 |
