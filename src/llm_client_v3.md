@@ -1,6 +1,6 @@
-# llm_client.md
+# llm_client_v3.md
 
-> **用途**：让 AI 能在不读 `llm_client.pas` 源码的情况下，独立完成以下任务：
+> **用途**：让 AI 能在不读 `llm_client_v3.pas` 源码的情况下，独立完成以下任务：
 > - 写出正确的调用代码
 > - 定位并修复 bug
 > - 添加新 API
@@ -15,6 +15,32 @@
 > - 遇到 §8 的场景 → 停止，回查源码
 >
 > **可信度标记**：`[源码]` = 逐行核对过 `.pas`；`[协议]` = 从服务端契约推断；`[教训]` = 来自实际踩坑；`[未核实]` = 需回查源码。
+>
+> **文档版本**：v2.1（结构性重构版 · 能力边界修正版）
+> **最后更新**：2026-09-17
+> **SDK 源码位置**：本仓库 `src\llm_client_v3.pas`
+> **GUI 演示**：本仓库 `src\llm_tool_v3.lpi`
+> **相关文档**：
+> - [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) — Pascal 开发者切入指南
+> - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
+> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
+
+---
+
+## ⚠️ 阅读前必读：能力边界
+
+**在阅读本文之前，请先理解以下三条关键事实**：
+
+| # | 事实 | 说明 |
+|:-:|------|------|
+| 1 | **SDK 同时兼容 Delphi 7+ 和 FPC 3.0+** | 通过条件编译指令统一两端 |
+| 2 | **SDK 支持三种服务端** | `llm_service` / `llm_proxy` / `llm_proxy_tool`（LTB）——通过 `ServerKind` 与能力矩阵区分 |
+| 3 | **`GenerateWithImageFile` 等图片 API 只对代理服务端有效** | `llm_service` 是纯文本服务端，**收到图片附件会拒绝**（返回 `code: -1`）。图片要经 `llm_proxy` / LTB 转发到 VLM 后端。 |
+
+> **关键区分**：
+> - **客户端 API 无差异**——SDK 本身对三种服务端使用**相同的 API**。
+> - **服务端能力有差异**——`set_system_message` 只有 `llm_service` 支持；工具只有 LTB 支持；多模态转发只有 `llm_proxy` / LTB 支持。
+> - **客户端必须做能力发现**——通过 `LLMSupported` / `HasVision` 等接口查询服务端能力，**不要硬编码假设**。
 
 ---
 
@@ -28,6 +54,16 @@
 | `Destroy` | 无参 | 调 `Disconnect`，释放 `FCapabilities` / `FLastException` | 调用者 | — |
 | `Connect` | `(out ErrorMsg: string): boolean` | 见 §1.6 副作用表 | 调用者 | `False` + `ErrorMsg` |
 | `Disconnect` | 无参 | 见 §1.6 副作用表 | 调用者 | — |
+
+> **`AServerApp` 的典型值**：
+> - `'LLM_Service'`（**默认，三种服务端共用**——大小写严格）
+> - `'LLM_Proxy'`（`llm_proxy` 换端点时使用）
+> - `'LLM_Proxy_Tool'`（LTB 换端点时使用）
+>
+> **`AEndpoint` 的典型值**：
+> - `'ipc:llm_service'`（**默认**）
+> - `'ipc:llm_proxy'` / `'ipc:llm_proxy_tool'`（换端点时使用）
+> - `'0.0.0.0:9898'`（跨机 TCP）
 
 ### 1.2 会话管理
 
@@ -55,7 +91,7 @@
 | `GenerateCurrent` | `(AContent, APrompt: string; out AError: string)` | **不改变 `FCurrentSessionId`** | 用 `FCurrentSessionId`（可能是空） |
 
 **`ASessionId` 优先级** [源码]：
-```
+```text
 如果 ASessionId <> '' → 用它（并写回 FCurrentSessionId）
 否则如果 FCurrentSessionId <> '' → 用它（续接）
 否则 → 用 client_name := FClientName
@@ -64,6 +100,11 @@
 **关键陷阱** [教训]：
 - `Generate` 传 `ASessionId = ''` 时，**不会新开会话**——只要 `FCurrentSessionId` 非空就会续接。
 - 想强制新会话：先 `Client.CurrentSessionId := ''`（有写属性）或 `CloseSession`。
+
+**`GenerateWithImageFile` 的服务端约束** [协议]：
+- **`llm_service` 会拒绝**——返回 `code: -1`，错误信息提示"Image attachments are not supported by llm_service in this revision"。
+- **`llm_proxy` / LTB 只在传了 `--vision` 时才接受**——否则同样返回 `code: -1`。
+- **客户端必须做能力发现**：调用前检查 `LLMSupported('attachments')` 和 `HasVision`。
 
 ### 1.4 服务端全局设置
 
@@ -88,6 +129,26 @@
 - 键存在且值为 1 → True
 - 键存在且值为 0 → False
 - 键不存在 → False
+
+**`HasVision` 的实际含义** [协议]：
+
+⚠️ **`vision=0` 在所有 LingoFuse LLM 服务端上都是固定的**——因为服务端**自身不做视觉处理**，它只是转发者。
+
+- `HasVision` 返回 `True` 的**唯一情况**：服务端**自身实现**了视觉处理（当前 v3 中没有任何服务端满足）。
+- `HasVision` 返回 `False` 时**不代表**链路不支持图片——只代表**服务端不做视觉处理**。
+- **图片能否被理解由后端决定**——客户端应通过 `HasAttachments` 判断"服务端是否接受附件字段"，再通过实际请求验证后端是否支持。
+
+> **实践建议**：客户端判断"能否发图片"的逻辑应为：
+> ```pascal
+> if LLM.HasAttachments and LLM.IsToolBridge then
+>   // LTB：转发图片到后端（需服务端传了 --vision）
+> else if LLM.HasAttachments then
+>   // llm_proxy：转发图片到后端（需服务端传了 --vision）
+> else
+>   // 服务端完全不接受附件
+> ```
+>
+> **不要**仅凭 `HasVision` 判断"能否发图片"——它在本版本永远是 False。
 
 ### 1.6 `Connect` / `Disconnect` 的副作用清单
 
@@ -211,7 +272,7 @@ att.Name.Bytes := TEncoding.UTF8.GetBytes('file.txt');  // 等价
 ```pascal
 uses
   Classes, SysUtils,
-  lingofuse_import, llm_client;
+  lingofuse_import, llm_client_v3;
 
 type
   TForm1 = class(TForm)
@@ -229,7 +290,8 @@ procedure TForm1.FormCreate(Sender: TObject);
 var
   E: string;
 begin
-  FClient := TLLMClient.Create('llm_service', 'ipc:llm', 10000);
+  // ⚠️ 应用名必须是 'LLM_Service'（大写 S），端点必须是 'ipc:llm_service'
+  FClient := TLLMClient.Create('LLM_Service', 'ipc:llm_service', 10000);
 
   FClient.OnChunk  := OnLLMChunk;
   FClient.OnFinish := OnLLMFinish;
@@ -277,16 +339,28 @@ end;
 procedure TForm1.FormClose(Sender: TObject; var Action: TCloseAction);
 begin
   FClient.Free;
-  LF_Shutdown();   // ⚠️ 由宿主程序负责（llm_client 不调）
+  LF_Shutdown();   // ⚠️ 由宿主程序负责（llm_client_v3 不调）
 end;
 ```
 
 **关键点**：
 1. **回调必须 marshalling 到主线程**（`TThread.Queue`）。
-2. **`LF_Shutdown` 由宿主程序调用**（`llm_client` 只在 `Disconnect` 里 `LF_FreeApp` + `LF_ExitMainThread`）。
+2. **`LF_Shutdown` 由宿主程序调用**（`llm_client_v3` 只在 `Disconnect` 里 `LF_FreeApp` + `LF_ExitMainThread`）。
 3. **`Generate` 第二参数是 prompt**，第三参数 `''` 表示"用当前会话或 client_name"。
+4. **构造参数必须精确**——`'LLM_Service'`（大写 S）+ `'ipc:llm_service'`（不是 `'ipc:llm'`）。
 
-### 3.2 带附件的生成
+### 3.2 带附件的生成（**仅对代理服务端有效**）
+
+> ⚠️ **`llm_service` 不支持图片附件**。以下示例**仅对 `llm_proxy` / `llm_proxy_tool` 有效**。
+>
+> **调用前应做能力发现**：
+> ```pascal
+> if not FClient.LLMSupported('attachments') then
+> begin
+>   ShowMessage('当前服务端不接受附件');
+>   Exit;
+> end;
+> ```
 
 ```pascal
 var
@@ -337,6 +411,47 @@ end;
 ```
 
 **关键点**：`CreateSession` 后，`FCurrentSessionId` 被更新，后续 `Generate` 传空字符串会自动续接。
+
+### 3.4 能力发现
+
+```pascal
+var
+  CapJson: TZ_JsonString;
+  E: string;
+begin
+  if FClient.GetAPICapabilities(CapJson, E) then
+  begin
+    // 服务端种类
+    DoStatus('Server kind: ' + FClient.ServerKind);
+
+    // 检查具体能力
+    if FClient.LLMSupported('set_system_message') then
+      DoStatus('✅ 支持 set_system_message')
+    else
+      DoStatus('❌ 不支持 set_system_message（用 new_session 路径）');
+
+    if FClient.LLMSupported('attachments') then
+      DoStatus('✅ 接受附件字段')
+    else
+      DoStatus('❌ 不接受附件');
+
+    if FClient.IsToolBridge then
+      DoStatus('✅ 是 LTB，支持服务端工具执行')
+    else
+      DoStatus('❌ 不是 LTB，无服务端工具能力');
+
+    // 注意：HasVision 在当前 v3 中永远返回 False
+    // （服务端自身不做视觉处理；图片由后端决定）
+  end
+  else
+    DoStatus('获取能力矩阵失败：' + E);
+end;
+```
+
+**关键点**：
+- **调用前必须做能力发现**——尤其在使用 `SetSystemMessage` / 附件 / 工具相关 API 前。
+- **`HasVision` 不可用于判断"能否发图片"**——它在本版本永远是 False。
+- **用 `HasAttachments` + 实际请求验证**判断图片路径是否可用。
 
 ---
 
@@ -403,6 +518,14 @@ end;
 | `Cannot open text file "X": ...` | `GenerateWithTextFile` | 文件不存在或无权限 | 检查路径 |
 | `Cannot open image file "X": ...` | `GenerateWithImageFile` | 文件不存在或无权限 | 检查路径 |
 | `Image file "X" is empty (0 bytes).` | `GenerateWithImageFile` | 空文件 | 检查源文件 |
+
+### 4.6 服务端拒绝相关（**v3 新增**）
+
+| 错误消息原文 | 抛出位置 | 根因 | 修复 |
+|--------------|----------|------|------|
+| `Image attachments are not supported by this server: --vision is disabled` | 服务端返回（`code: -1`） | `llm_proxy` / LTB 未传 `--vision` | 服务端启动时加 `--vision` |
+| `Image attachments are not supported by llm_service in this revision` | 服务端返回（`code: -1`） | 目标服务端是 `llm_service` | 改用 `llm_proxy` / LTB |
+| `set_system_message is not supported by llm_proxy` | 服务端返回（`code: -1`） | 目标服务端是代理 | 改用 `CreateSession(system_message)` |
 
 ---
 
@@ -582,7 +705,7 @@ end;
 1. **回调中不能调用任何 Call API** [源码]：会死锁（回调线程持有 LingoFuse 内部锁）。
 2. **回调中不能直接操作 UI** [教训]：VCL/LCL 非线程安全。
 3. **回调中维护跨消息状态要加锁** [未核实]：不确定通知线程是单一还是池化。
-4. **回调中不要 `DoStatus`** [源码]：`llm_client` 从不这样做，避免 `Z.Status` 队列重入。
+4. **回调中不要 `DoStatus`** [源码]：`llm_client_v3` 从不这样做，避免 `Z.Status` 队列重入。
 
 **正确 marshalling 模板**：
 ```pascal
@@ -781,17 +904,63 @@ if Client.LastException <> '' then
 
 **调试方法**：临时在 `HandleLLMNotify` 每个 `Exit` 前加 `OutputDebugString`。
 
+### 8.11 **图片附件被服务端拒绝**（**v3 新增**）
+
+**症状**：调用 `GenerateWithImageFile` 或 `GenerateWithAttachments`（含图片），返回 `code: -1`。
+
+**可能原因**（三种）：
+
+1. **连接的是 `llm_service`**：服务端**不支持多模态**，明确拒绝。
+2. **连接的是 `llm_proxy` / LTB，但服务端未传 `--vision`**：默认拒绝图片附件。
+3. **图片大小超限**：单图 base64 超 8 MB，或累计超 16 MB。
+
+**修复**：
+
+```pascal
+// ✅ 调用前做能力发现
+if not FClient.LLMSupported('attachments') then
+begin
+  ShowMessage('服务端不接受附件字段');
+  Exit;
+end;
+
+if FClient.ServerKind = 'service' then
+begin
+  ShowMessage('llm_service 不支持多模态，请改用 llm_proxy / LTB');
+  Exit;
+end;
+
+// 检查单文件大小
+if Length(ImageB64) > ATTACHMENT_MAX_IMAGE_B64_PER_FILE then
+begin
+  ShowMessage('图片过大，请压缩后重试');
+  Exit;
+end;
+
+// 再调用
+Client.GenerateWithImageFile(...);
+```
+
+**根因**：
+- `llm_service` 是纯文本服务端（`vision: 0`，且主动拒绝）。
+- `llm_proxy` / LTB 默认 `--vision` 关闭，需显式开启。
+
+**相关文档**：
+- [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8-1 / P8-3
+- [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) 第 5.5 节
+- [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) 第 4.5 节
+
 ---
 
 ## §9 服务端能力差异
 
 ### 9.1 三种服务端
 
-| 服务端 | `server_kind` | 特征 |
-|--------|---------------|------|
-| `llm_service.py` | `'service'` | 本地模型，含 `set_system_message` |
-| `llm_proxy.py` | `'proxy'` | 无状态转发 |
-| `llm_proxy_tool.py` | `'proxy'` | 无状态转发 + 工具调用 |
+| 服务端 | `server_kind` | 特征 | 多模态 |
+|--------|---------------|------|:------:|
+| `llm_service.py` | `'service'` | 本地模型，含 `set_system_message`；**纯文本** | ❌ **不支持** |
+| `llm_proxy.py` | `'proxy'` | 无状态转发；**图片由后端决定** | ✅ **转发**（需 `--vision`） |
+| `llm_proxy_tool.py` | `'proxy'` | 无状态转发 + **服务端工具执行**；**图片由后端决定** | ✅ **转发**（需 `--vision`） |
 
 **`proxy_tool` 与 `proxy` 的唯一区别**：
 ```pascal
@@ -813,6 +982,7 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
     "list_sessions": 1,
     "set_system_message": 1,
     "health": 1,
+    "llm_stream": 1,
     "attachments": 1,
     "vision": 0,
     "tools": 0,
@@ -822,12 +992,30 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 }
 ```
 
+**关键字段语义**：
+
+| 字段 | 语义 | 说明 |
+|------|------|------|
+| `attachments` | 服务端是否**接受** `attachments` 字段 | 1 = 接受（不会因附件存在就拒绝） |
+| `vision` | 服务端**自身是否做视觉处理** | **0 在所有服务端都成立**——服务端只转发 |
+| `tools` / `tool_calls` / `tool_results` | 服务端是否支持工具相关行为 | 只有 LTB 为 1 |
+| `set_system_message` | 服务端是否支持切换全局 system message | 只有 `llm_service` 为 1 |
+
+> **`vision=0` 的坑**：它**不表示**"链路不支持多模态"——它只表示"**服务端自身不做视觉处理**"。图片能否被理解，由**后端**决定。
+>
+> **客户端判断"能否发图片"的正确逻辑**：
+> 1. 检查 `ServerKind`——是 `'service'` 则**不能发图片**。
+> 2. 检查 `attachments`——为 1 时服务端**接受**附件字段。
+> 3. 实际调用后，观察是否返回 `code: -1`——据此判断后端是否支持。
+
 ### 9.3 `set_system_message` 的行为差异
 
 | 服务端 | 直接调用 | 能力已知后调用 |
 |--------|----------|----------------|
-| `service` | 走网络 | 走网络 |
+| `service` | 走网络 | 走网络（**服务端支持**） |
 | `proxy` / `proxy_tool` | 走网络 → 服务端拒绝 | **本地短路**（不发网络） |
+
+**`llm_service` 支持 `set_system_message` 的原因**：它拥有进程内的 `_system_message` 字段，`set_system_message` 修改的是"新会话的默认值"。这是无状态代理无法实现的。
 
 ---
 
@@ -846,8 +1034,21 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 | 变更 | 迁移动作 |
 |------|---------|
 | `CapabilitiesRawJson: string` → `TZ_JsonString` | 调用方 `S := Client.CapabilitiesRawJson` 改为 `S := Client.CapabilitiesRawJson.Text` |
-| `GetAPICapabilities` 参数 `var string` → `var TZ_JsonString` | 调用方 `var S: string` 改为 `var S: TZ_JsonString` |
+| `GetAPICapabilities` 参数 `var string` → `var TZ_JsonString` | 调用方 `var S: string` 改为 `var S: TZ_JsonString`；取文本用 `.Text` |
 | 附件字段 `string` → `TZ_JsonString` | 调用方 `Att.Name := 'x'` 改为 `Att.Name.Text := 'x'`（或保留，隐式转换） |
+
+**`TZ_JsonString` 的访问方式**：
+
+```pascal
+var
+  Js: TZ_JsonString;
+begin
+  Js.Text := 'hello';                   // 写入（文本）
+  WriteLn(Js.Text);                     // 读取（文本）
+  Js.Bytes := TEncoding.UTF8.GetBytes('hello');   // 写入（原始字节）
+  WriteLn(Length(Js.Bytes));            // 读取字节长度
+end;
+```
 
 ### 10.3 v3.8 早期 → final：`SafeParseJson` 直连 `Parae`
 
@@ -856,6 +1057,16 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 **修正**：直接 `AJson.Parae(ARawBytes)`。
 
 **教训**：**注释与代码不一致立刻审查**——早期版本的注释写"guard before Parae()"，代码却用了 `ParseText`。
+
+### 10.4 v2.0 → v2.1：文档侧修正
+
+**本次修正**（仅文档，不改 SDK 源码）：
+
+- 修正文档标题与源文件引用（`llm_client.pas` → `llm_client_v3.pas`）。
+- 修正构造示例参数（`'llm_service', 'ipc:llm'` → `'LLM_Service', 'ipc:llm_service'`）。
+- 补充能力矩阵中 `vision=0` 的语义说明。
+- 补充图片附件被拒绝的排查章节（§8.11）。
+- 补充能力发现示例（§3.4）。
 
 ---
 
@@ -931,7 +1142,7 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 ### 12.1 "我要写一个 LLM 客户端"
 
-→ §3.1 模板 → 记得 `TThread.Queue` marshalling → 记得 `LF_Shutdown` 由宿主调用
+→ §3.1 模板 → 记得 `TThread.Queue` marshalling → 记得 `LF_Shutdown` 由宿主调用 → **用 `'LLM_Service'` + `'ipc:llm_service'`**
 
 ### 12.2 "我要加一个新 API"
 
@@ -961,41 +1172,58 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 → §4.5 附件错误对照 → 检查大小是否超限
 
-### 12.9 "升级破坏性变更"
+### 12.9 **"图片附件被拒绝"**（v3 新增）
+
+→ §8.11 + §4.6 → 检查：
+1. 目标服务端是 `llm_service`？→ 改用代理
+2. 代理未传 `--vision`？→ 服务端启动参数加 `--vision`
+3. 图片超限？→ 压缩
+
+### 12.10 "升级破坏性变更"
 
 → §10.2 迁移表
 
-### 12.10 "改动会不会破坏别的"
+### 12.11 "改动会不会破坏别的"
 
 → §11 影响面分析
+
+### 12.12 **"如何判断服务端支持什么"**
+
+→ §3.4 能力发现示例 → 用 `LLMSupported` / `IsToolBridge` / `HasAttachments` → **不要**用 `HasVision` 判断图片能力
 
 ---
 
 ## §13 诚实的不确定清单
 
 > **用途**：AI 遇到以下场景**必须停止**，回查源码或询问人类。
+>
+> **状态标注**：✅ 已解决（在后续版本或文档中确认）；⏳ 未解决（仍需回查源码）。
 
-| # | 不确定点 | 我尝试过什么 | 建议怎么查 |
-|---|---------|-------------|-----------|
-| 1 | `LF_CallEx` 失败时返回 nil 还是空句柄 | 读声明看不出运行时行为 | 读 `Z.LingoFuse_Export.pas` 的 `LF_Call` 实现；或测试代码调不存在的 App |
-| 2 | 通知回调是单线程还是池化 | 无 | 在 `HandleLLMNotify` 打印 `GetCurrentThreadId`，发 100 条消息看 ID |
-| 3 | `ClearTextAttachments` 是否真的必要 | 无，接受用户建议 | 写最小复现：循环 `SetLength` + 赋值，观察内存 |
-| 4 | `umlBase64EncodeBytes` 消费源是否所有版本一致 | 读 `Z.UnicodeMixedLib.md` 只说"可能" | 读 `Z.UnicodeMixedLib.pas` 实现 |
-| 5 | `server_kind` 字段在所有版本是否存在 | 无，假设总是存在 | 查历史版本 `llm_service.py` |
-| 6 | `ATTACHMENT_ALLOWED_IMAGE_MIMES` 的用途 | 定义了但未使用 | 问原作者 |
-| 7 | `GenerateWithTextFile` 的 Latin-1 fallback 正确性 | 无 | 造非 UTF-8/GBK 文件实测 |
-| 8 | `TAtomString.Create('')` 是否所有平台行为一致 | 无 | 读 `Z.Core.md` §3.2 |
+| # | 不确定点 | 状态 | 说明 |
+|---|---------|:----:|------|
+| 1 | `LF_CallEx` 失败时返回 nil 还是空句柄 | ✅ 已解决 | 由 **LF-CALL-001** 明确：**返回 size=0 的空句柄，不是 nil**。`CallAPI` 需检查 `LF_GetSize`。 |
+| 2 | 通知回调是单线程还是池化 | ⏳ 未解决 | 无明确结论。建议在 `HandleLLMNotify` 打印 `GetCurrentThreadId`，发 100 条消息看 ID。 |
+| 3 | `ClearTextAttachments` 是否真的必要 | ⏳ 未解决 | 用户建议保留。写最小复现：循环 `SetLength` + 赋值，观察内存。 |
+| 4 | `umlBase64EncodeBytes` 消费源是否所有版本一致 | ⏳ 未解决 | 读 `Z.UnicodeMixedLib.pas` 实现确认。 |
+| 5 | `server_kind` 字段在所有版本是否存在 | ✅ 已解决 | 由 **LingoFuse_LLM_Ecosystem_User_Guide.md** 明确：三种服务端都返回 `server_kind`。 |
+| 6 | `ATTACHMENT_ALLOWED_IMAGE_MIMES` 的用途 | ⏳ 未解决 | 定义了但未使用。需问原作者。 |
+| 7 | `GenerateWithTextFile` 的 Latin-1 fallback 正确性 | ⏳ 未解决 | 造非 UTF-8/GBK 文件实测。 |
+| 8 | `TAtomString.Create('')` 是否所有平台行为一致 | ⏳ 未解决 | 读 `Z.Core.pas` §3.2。 |
 
 ---
 
 ## §14 关键规则总结（AI 速记）
 
 > **写代码必守**：
-> 1. `OnChunk` 等回调在**通知线程**执行——UI 操作必须 `TThread.Queue`。
-> 2. 回调中**不能**调用 Call API——会死锁。
-> 3. 附件数组必须 **`ClearTextAttachments` / `ClearImageAttachments`**。
-> 4. `Connect` 后**检查返回值**——能力探测失败会静默。
-> 5. `Generate` 传空 `ASessionId` 会**续接**会话。
+> 1. 构造参数用 `'LLM_Service'` + `'ipc:llm_service'`（**大小写严格**）。
+> 2. `OnChunk` 等回调在**通知线程**执行——UI 操作必须 `TThread.Queue`。
+> 3. 回调中**不能**调用 Call API——会死锁。
+> 4. 附件数组必须 **`ClearTextAttachments` / `ClearImageAttachments`**。
+> 5. `Connect` 后**检查返回值**——能力探测失败会静默。
+> 6. `Generate` 传空 `ASessionId` 会**续接**会话。
+> 7. **调用前做能力发现**——尤其 `SetSystemMessage` / 附件 / 工具相关 API。
+> 8. **图片附件前检查 `ServerKind`**——`'service'` 直接拒绝。
+> 9. **`HasVision` 不可用于判断"能否发图片"**——它在本版本永远是 False。
 
 > **改代码必守**：
 > 1. 所有请求构造用 `TZ_JsonObject`，`try...finally` 释放。
@@ -1010,10 +1238,29 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 > - ❌ 不用 `reference to procedure` 做事件（用 `of object`）
 > - ❌ 不在 `Disconnect` 里调 `LF_Shutdown`（宿主负责）
 > - ❌ 不读 `FCapabilities` 原始 JSON 判 `nil`（用 `LLMSupported`）
+> - ❌ **不用 `HasVision` 判断"能否发图片"**（用 `ServerKind` + `HasAttachments`）
 
 ---
 
-**文档版本**：v2.0（结构化重构版）
-**最后更新**：2026-09-16
+## §15 相关文档
+
+| 文档 | 说明 |
+|------|------|
+| [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南（六大场景） |
+| [`../Build_Guide.md`](../Build_Guide.md) | 编译指南（含 `llm_client_v3` / `llm_tool_v3`） |
+| [`../readme.md`](../readme.md) | 项目总览与四大核心应用组件 |
+| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大应用组件 + 两条路径） |
+| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全（含 P8 多模态专项） |
+| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 纯转发代理命令行手册（多模态转发，第 5.5 节） |
+| [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | LTB 命令行手册（多模态转发，第 4.5 节） |
+| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 本地推理服务手册（明确不支持多模态） |
+| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含 LF-XXX-NNN 踩坑知识库） |
+
+**GUI 演示源码**：本仓库 `src\llm_tool_v3_frm.pas` —— 展示 SDK 全部关键用法（多会话、流式、附件、能力发现）。
+
+---
+
+**文档版本**：v2.1（结构性重构版 · 能力边界修正版——修正文档标题与源文件引用、修正构造示例参数、补充能力矩阵 `vision=0` 语义、新增图片附件排查章节、补充能力发现示例、更新诚实清单状态）
+
 **维护方式**：发现新的错误消息、新坑、新模板，追加到对应章节
-**核心承诺**：AI 读完本文档能独立完成 90% 的 llm_client 任务，剩下 10% 见 §13 诚实清单
+**核心承诺**：AI 读完本文档能独立完成 90% 的 `llm_client_v3` 任务，剩下 10% 见 §13 诚实清单
