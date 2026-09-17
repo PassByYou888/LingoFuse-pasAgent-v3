@@ -1,8 +1,8 @@
 # NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf 多模态模型下载与部署指南
 
-> **文档版本**：V3.1（v3 多模态重写版 · 量化架构扩充版）
+> **文档版本**：V3.2（v3 多模态重写版 · 能力边界修正版）
 > **最后更新**：2026-09-17
-> **适用组件**：`llm_service.exe`、`llm_proxy.exe`、`llm_proxy_tool.exe`
+> **适用组件**：`llm_service.exe`（纯文本加载）、`llm_proxy.exe`（多模态转发）、`llm_proxy_tool.exe`（LTB，多模态转发 + 工具）
 > **相关文档**（同目录 / `src/` 子目录）：
 > - 项目总览：[`readme.md`](readme.md)
 > - 编译指南：[`Build_Guide.md`](Build_Guide.md)
@@ -11,6 +11,20 @@
 > - 纯转发代理：[`src/LingoFuse_LLM_Proxy_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_CLI_Guide.md)
 > - LTB 工具桥：[`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)
 > - 踩坑大全：[`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md)
+
+---
+
+## ⚠️ 阅读前必读：能力边界
+
+**在阅读本文之前，请先理解以下三条关键事实**：
+
+| # | 事实 | 说明 |
+|:-:|------|------|
+| 1 | **`llm_service.exe` 不支持多模态** | 它是**本地纯文本推理服务**。**没有** `--mmproj` 参数。加载 Omni 主模型后，只能进行**纯文本**推理。 |
+| 2 | **多模态必须经 `llm_proxy` / `llm_proxy_tool` 转发** | 由 **VLM 后端**（如 LM Studio）加载 Omni GGUF + mmproj 视觉编码器，`llm_proxy` / LTB **原样转发**图片附件。 |
+| 3 | **本文档推荐的"多模态部署"是在 VLM 后端（如 LM Studio）上完成的** | `llm_service` 只适合做纯文本推理或模型验证。 |
+
+> **为什么 `llm_service` 不支持多模态？** 本地推理路径（llama.cpp + mmproj）尚未实现视觉编码器加载。这是 v3 的已知边界，详见 [`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8-3。
 
 ---
 
@@ -23,7 +37,7 @@
 3. **想知道量化架构差别** → 读第二章「量化架构多样性」
 4. **想理解多模态是怎么运作的** → 读第三章「多模态基本知识点」
 5. **想下载模型 + 视觉编码器** → 读第四、五章
-6. **想部署到 LingoFuse LLM 服务** → 读第六章「部署说明」
+6. **想部署多模态（通过 VLM 后端）** → 读第六章「部署说明」
 7. **想了解为什么没有语音** → 读第七章「语音支持特别说明」
 
 ---
@@ -125,11 +139,13 @@ flowchart TB
     subgraph NEW["🎯 多模态时代（v3 叙事）"]
         N1["多模态模型<br/>Omni GGUF"]
         N2["视觉编码器<br/>mmproj-F16 / F32"]
-        N3["llm_service / llm_proxy / LTB<br/>路由不同模态"]
-        N4["客户端<br/>文字 + 图片混合"]
+        N3["VLM 后端（LM Studio 等）<br/>加载 Omni + mmproj"]
+        N4["llm_proxy / LTB<br/>原样转发图片"]
+        N5["客户端<br/>文字 + 图片混合"]
         N1 --> N3
         N2 --> N3
         N3 --> N4
+        N4 --> N5
     end
 
     OLD -.->|"架构级跃迁"| NEW
@@ -141,18 +157,21 @@ flowchart TB
     style O3 fill:#95A5A6,stroke:#5D6D7E,stroke-width:2px,color:#FFFFFF
     style N1 fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
     style N2 fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
-    style N3 fill:#922B21,stroke:#5A1A14,stroke-width:4px,color:#FFFFFF
-    style N4 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style N3 fill:#C0392B,stroke:#641E16,stroke-width:4px,color:#FFFFFF
+    style N4 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style N5 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
 ```
 
-### 0.5 组件的多模态行为
+### 0.5 组件的多模态行为（**核心边界表**）
 
 | 组件 | 多模态行为 | 说明 |
 |------|-----------|------|
-| **`llm_service`** | **本地加载多模态模型 + mmproj** | 通过本地 llama.cpp 的 VLM 路径处理图片 |
-| **`llm_proxy`** | **原样转发**图片附件到后端 | 是否支持取决于后端 |
-| **`llm_proxy_tool`（LTB）** | **原样转发**图片附件到后端 | 首轮传图，工具链后续轮次用占位符 |
-| **`llm_client.pas`** | **构建**多模态内容（文本 + 图片附件） | 通过 `GenerateWithAttachments` / `GenerateWithImageFile` |
+| **`llm_service`** | ❌ **不支持多模态** | 本地推理路径未实现视觉编码器；无 `--mmproj` 参数。可加载 Omni 主模型做**纯文本**推理。 |
+| **`llm_proxy`** | ✅ **原样转发**图片附件 | 是否支持取决于**后端**（LM Studio 等）。 |
+| **`llm_proxy_tool`（LTB）** | ✅ **原样转发**图片附件 | 首轮传图，工具链后续轮次用占位符。是否支持取决于**后端**。 |
+| **`llm_client_v3.pas`** | ✅ **构建**多模态内容（文本 + 图片附件） | 通过 `GenerateWithAttachments` / `GenerateWithImageFile`。 |
+
+> 🎯 **一句话记忆**：**本地推理不支持多模态；多模态必须经 `llm_proxy` / LTB 转发到 VLM 后端。**
 
 ---
 
@@ -194,7 +213,7 @@ flowchart LR
     A["📄 Pascal 工具"] --> B["📡 信标"]
     B --> C["🌉 MCP 网关 / LTB"]
     C --> D["🤖 AI 客户端"]
-    D --> E["🧠 llm_service.exe<br/>（加载 Omni 模型）"]
+    D --> E["🔌 VLM 后端<br/>（LM Studio 等）"]
     E -->|"主模型"| F["📦 Omni GGUF<br/>文字 + 图片 token 基座"]
     E -->|"视觉编码器"| G["👁️ mmproj<br/>F16 / F32"]
     D -.->|"携带图片"| E
@@ -207,6 +226,8 @@ flowchart LR
     style F fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
     style G fill:#C0392B,stroke:#641E16,stroke-width:3px,color:#FFFFFF
 ```
+
+> **注意**：图中的 VLM 后端是 **LM Studio 等外部程序**，**不是 `llm_service`**。`llm_service` 只能加载主模型做纯文本推理。
 
 ---
 
@@ -333,15 +354,18 @@ flowchart LR
 
 ### 2.5 实测对比的简单方法
 
-```powershell
-# 用同一个提示词、同一个上下文，跑三种架构
-$prompts = @("解释什么是 MoE 架构", "写一段快速排序", "分析这张图")  # 最后一条需要图片
+**场景一：纯文本推理（`llm_service`）**
 
-# 逐个跑，记录 tokens/s
-.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-...Q4_K_M.gguf --mmproj .\mmproj-F16.gguf --gpu-layers -1
-.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-...UD-Q4_K_XL.gguf --mmproj .\mmproj-F16.gguf --gpu-layers -1
-.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-...IQ4_XS.gguf --mmproj .\mmproj-F16.gguf --gpu-layers -1
+```powershell
+# 只加载主模型，不涉及视觉编码器（llm_service 不支持 mmproj）
+.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf --gpu-layers -1
+.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-Q4_K_XL.gguf --gpu-layers -1
+.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf --gpu-layers -1
 ```
+
+**场景二：多模态推理（VLM 后端）**
+
+在 **LM Studio** 中切换模型架构，重复相同的图片问答，观察响应速度与质量。
 
 **观察三个指标**：
 
@@ -358,7 +382,7 @@ $prompts = @("解释什么是 MoE 架构", "写一段快速排序", "分析这�
 | 参数项 | 规格 |
 |---|---|
 | **模型名称** | NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning |
-| **模型类型** | **多模态（Omni）**——文字 + 图片 |
+| **模型类型** | **多模态（Omni）**——文字 + 图片（需 VLM 后端） |
 | **架构** | MoE — Mamba-2 + MoE + Attention 混合 |
 | **总参数量** | 30B |
 | **激活参数量** | ~3B / token |
@@ -366,7 +390,7 @@ $prompts = @("解释什么是 MoE 架构", "写一段快速排序", "分析这�
 | **支持的量化架构** | `Q4_K_M` / `UD-Q4_K_XL` / `IQ4_NL` / `IQ4_XS` / `Q5_K_M` / `Q8_0` 等 |
 | **本文档示例量化** | `IQ4_XS`（block-32, ~4.0 bpw） |
 | **示例主模型文件大小** | ~19.7 GB |
-| **视觉编码器** | **mmproj-F16**（推荐） / **mmproj-F32**（更高精度） |
+| **视觉编码器** | **mmproj-F16**（推荐） / **mmproj-F32**（更高精度）—— **由 VLM 后端加载** |
 | **推理模式** | 可配置思考模式（`enable_thinking=True/False`） |
 | **投机解码** | 支持 DSpark、DFlash、MTP（Multi-Token Prediction） |
 | **支持语言** | 英语（含代码）、西班牙语、法语、德语、意大利语、日语 |
@@ -465,11 +489,13 @@ flowchart LR
 | **主模型（LLM 主干）** | 语言理解与生成 | `NVIDIA-Nemotron-3-Nano-Omni-...gguf`（~19.7 GB） |
 | **视觉编码器（mmproj）** | 图片 → 视觉 token | `mmproj-F16.gguf` 或 `mmproj-F32.gguf`（几百 MB） |
 
+> ⚠️ **重要**：主模型和 mmproj **都由 VLM 后端（如 LM Studio）加载**。`llm_service` **不会**加载 mmproj。
+
 **没有 mmproj**：
 
 ```mermaid
 flowchart LR
-    A["客户端发图片"] --> B["llm_service<br/>无 mmproj"]
+    A["客户端发图片"] --> B["VLM 后端<br/>无 mmproj"]
     B --> C["❌ 无法编码图片<br/>请求被拒绝 / 图片被忽略"]
 
     style A fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
@@ -481,7 +507,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["客户端发图片"] --> B["llm_service<br/>加载 mmproj"]
+    A["客户端发图片"] --> B["VLM 后端<br/>加载 mmproj"]
     B --> C["✅ 图片 → 视觉 token<br/>→ LLM 推理"]
     C --> D["返回文字回答"]
 
@@ -521,21 +547,21 @@ flowchart TB
     ROOT --> A["llm_service<br/>本地推理"]
     ROOT --> B["llm_proxy<br/>纯转发"]
     ROOT --> C["llm_proxy_tool<br/>LTB"]
-    ROOT --> D["llm_client<br/>Pascal SDK"]
+    ROOT --> D["llm_client_v3<br/>Pascal SDK"]
 
-    A --> A1["✅ 加载 Omni + mmproj<br/>本地处理图片"]
+    A --> A1["❌ 不支持多模态<br/>仅文本（无 --mmproj）"]
     B --> B1["✅ 原样转发图片<br/>由后端决定"]
     C --> C1["✅ 原样转发图片<br/>首轮传图 + 占位符"]
     D --> D1["✅ 构建多模态内容<br/>文本 + 图片附件"]
 
     style ROOT fill:#0D2F52,stroke:#000000,stroke-width:5px,color:#FFFFFF
-    style A fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
+    style A fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style B fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
-    style C fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style C fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
     style D fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
-    style A1 fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+    style A1 fill:#FADBD8,stroke:#922B21,stroke-width:2px,color:#5A1A14
     style B1 fill:#E8DAEF,stroke:#5B2C6F,stroke-width:2px,color:#321640
-    style C1 fill:#FADBD8,stroke:#922B21,stroke-width:2px,color:#5A1A14
+    style C1 fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
     style D1 fill:#D6EAF8,stroke:#1F618D,stroke-width:2px,color:#0D2F52
 ```
 
@@ -571,7 +597,7 @@ huggingface-cli download unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF \
 
 ### 5.2 视觉编码器（mmproj）下载
 
-mmproj 编码器通常与主模型**放在同一个 Hugging Face 仓库**中，因此你可以在上面这些仓库里一并找到。
+mmproj 编码器通常在**同一个 Hugging Face 仓库**中与主模型一起提供，但**具体以仓库实际文件列表为准**——有些仓库的 mmproj 在单独的目录或子仓库。
 
 **文件名约定**：
 
@@ -593,7 +619,7 @@ huggingface-cli download unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF \
 
 ### 5.3 下载后的文件重命名
 
-为与 LingoFuse LLM 服务的默认扫描规则兼容，建议重命名：
+为便于管理，建议重命名：
 
 | 下载得到的文件 | 建议重命名为 |
 |---------------|-------------|
@@ -602,7 +628,10 @@ huggingface-cli download unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF \
 | `...-UD-Q4_K_XL.gguf` | `NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-Q4_K_XL.gguf` |
 | `mmproj-*.gguf`（F16 或 F32） | `mmproj-F16.gguf` 或 `mmproj-F32.gguf`（保留标识即可） |
 
-> **提示**：重命名只是为了让默认扫描规则生效。你也可以不重命名，改用 `--model-path` 显式指定。
+> **重要提示**：
+>
+> - `llm_service.exe` 的**默认加载文件名**是 `./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf`。如果你重命名主模型为 Omni 文件名，**必须显式传 `--model-path`**，否则 `llm_service` 找不到文件。
+> - VLM 后端（LM Studio 等）通过 **GUI 选择文件**，不依赖默认文件名，因此重命名对它无影响。
 
 ### 图 2：下载与放置流程
 
@@ -612,43 +641,67 @@ flowchart LR
     A --> C["📥 下载视觉编码器<br/>mmproj-F16 / F32"]
     B --> D["✏️ 重命名主模型<br/>保留架构标识"]
     C --> E["✏️ 保留 mmproj 名称<br/>或规范化为 mmproj-F16.gguf"]
-    D --> F["📁 放到 llm_service.exe 同目录"]
-    E --> F
-    F --> G["✅ 服务启动时加载<br/>选中的架构 + mmproj"]
+    D --> F1["📁 放到 VLM 后端<br/>（LM Studio 等）"]
+    E --> F1
+    D --> F2["📁 放到 llm_service.exe 同目录<br/>（纯文本场景）"]
+    F1 --> G["✅ VLM 后端加载<br/>选中的架构 + mmproj"]
+    F2 --> H["✅ llm_service 加载<br/>选中的架构（无 mmproj）"]
 
     style A fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style B fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
     style C fill:#C0392B,stroke:#641E16,stroke-width:3px,color:#FFFFFF
     style D fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
     style E fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
-    style F fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
-    style G fill:#0D2F52,stroke:#000000,stroke-width:4px,color:#FFFFFF
+    style F1 fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
+    style F2 fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
+    style G fill:#8E44AD,stroke:#5B2C6F,stroke-width:4px,color:#FFFFFF
+    style H fill:#0D2F52,stroke:#000000,stroke-width:4px,color:#FFFFFF
 ```
 
 ---
 
-## 六、部署说明（针对 LingoFuse LLM 服务）
+## 六、部署说明
 
-### 6.1 文件放置要求
+> ⚠️ **本章是文档的核心修正**。多模态部署**不是在 `llm_service` 上完成**的，而是在 **VLM 后端（如 LM Studio）** 上完成，然后由 `llm_proxy` / `llm_proxy_tool` 转发。
 
-将下面这些文件放在 `llm_service.exe` 同目录下：
+### 6.1 两种部署路径
+
+```mermaid
+flowchart TB
+    subgraph TextOnly["📝 纯文本路径（llm_service）"]
+        T1["主模型 GGUF"] --> T2["llm_service.exe<br/>--model-path"]
+        T2 --> T3["纯文本推理"]
+        T4["❌ 不加载 mmproj"] -.-> T2
+    end
+
+    subgraph Multimodal["🎯 多模态路径（推荐：VLM 后端 + 转发）"]
+        M1["主模型 GGUF"] --> M3["VLM 后端<br/>（LM Studio 等）"]
+        M2["mmproj GGUF"] --> M3
+        M3 --> M4["llm_proxy / llm_proxy_tool<br/>原样转发图片"]
+        M4 --> M5["多模态推理"]
+    end
+
+    style TextOnly fill:#D6EAF8,stroke:#1F618D,stroke-width:3px,color:#0D2F52
+    style Multimodal fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
+    style T4 fill:#FADBD8,stroke:#922B21,stroke-width:2px,color:#5A1A14
+```
+
+### 6.2 纯文本部署（`llm_service`）
+
+**适用场景**：只做文字问答，不需要图片。
+
+**文件放置**：
 
 ```
 <llm_service.exe 同目录>/
 ├── NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf    ← 主模型（示例架构）
 ├── NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf       ← 备选架构 1
-├── NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-Q4_K_XL.gguf   ← 备选架构 2
-└── mmproj-F16.gguf                                                  ← 视觉编码器
+└── NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-Q4_K_XL.gguf   ← 备选架构 2
 ```
 
-> **重要**：
-> - 只放主模型 → 文本可用、图片不可用。
-> - **必须主模型 + mmproj 都在，多模态才完整**。
-> - 可以**放多份不同架构的主模型**，启动时用 `--model-path` 选一个。
+**前置准备：确认 `llama-cpp-python` 后端**
 
-### 6.2 前置准备：确认 `llama-cpp-python` 后端
-
-`llm_service.exe` 的 CPU / CUDA 支持**不是通过切换 exe 文件名实现的**，而是由所安装的 `llama-cpp-python` wheel 决定：
+`llm_service.exe` 的 CPU / CUDA 支持由所安装的 `llama-cpp-python` wheel 决定：
 
 - **CPU 版**：
   ```bash
@@ -659,50 +712,85 @@ flowchart LR
   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
   ```
 
-> **注意**：多模态（mmproj）支持需要 `llama-cpp-python` 的**较新版本**。若你的版本较旧，请升级到最新版。
-
-### 6.3 启动命令示例
-
-**纯 CPU 模式（以 IQ4_XS 为例）**：
+**启动命令示例**：
 
 ```powershell
+# 必须显式指定 --model-path（默认文件名是旧模型）
 .\llm_service.exe `
   --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf `
-  --mmproj .\mmproj-F16.gguf `
   --gpu-layers 0 `
   --threads 8 `
   --context-size 8192
 ```
 
-**CUDA 加速模式（以 Q4_K_M 为例）**：
+> ⚠️ **`--mmproj` 参数不存在**。`llm_service` 没有多模态加载能力。若传入该参数，会被忽略或报错。
 
-```powershell
-.\llm_service.exe `
-  --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf `
-  --mmproj .\mmproj-F16.gguf `
-  --gpu-layers -1 `
-  --threads 4 `
-  --context-size 32768
+### 6.3 多模态部署（VLM 后端 + 转发）—— v3 推荐
+
+**适用场景**：需要图片问答。
+
+#### 6.3.1 文件放置（给 VLM 后端）
+
+在 **LM Studio**（或其他 VLM 后端）的模型目录中放置：
+
+```
+<LM Studio 模型目录>/
+├── NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf    ← 主模型
+└── mmproj-F16.gguf                                                  ← 视觉编码器
 ```
 
-> **参数名以实际实现为准**：`--mmproj` 的具体名称请参考 [`src/LingoFuse_LLM_Service_CLI_guide.md`](src/LingoFuse_LLM_Service_CLI_guide.md)。
+#### 6.3.2 在 LM Studio 中加载
+
+1. 打开 LM Studio
+2. 在模型列表中**同时选择主模型和 mmproj**（LM Studio 会自动识别配对）
+3. 启动本地服务器（默认端口 `1234`）
+4. 确认模型 ID（可在 `/v1/models` 中查看）
+
+#### 6.3.3 启动 LTB 转发
+
+```powershell
+# LTB 会把客户端的图片附件原样转发给 LM Studio
+.\llm_proxy_tool.exe `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" `
+  --mcp-reg-agent-app llm_proxy_agent
+```
+
+如果不需要工具调用，用 `llm_proxy` 即可：
+
+```powershell
+.\llm_proxy.exe `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
+```
+
+#### 6.3.4 验证多模态
+
+在 LM Studio 的 GUI 中直接发一张图片测试。若 LM Studio 能识别图片，说明 VLM 加载成功；此时 LTB / `llm_proxy` 的转发也能正常工作。
 
 ### 6.4 内存需求估算
 
-| 配置 | 内存需求（估算） |
-|---|---|
-| Omni 主模型 + mmproj-F16 + 8K 上下文，纯 CPU | ~24–26 GB |
-| Omni 主模型 + mmproj-F16 + 32K 上下文，纯 CPU | ~28–30 GB |
-| Omni 主模型 + mmproj-F16 + 8K 上下文，GPU 全卸载 | ~20 GB 显存 + mmproj 少量内存 |
+> **注意**：以下分为"纯文本（`llm_service`）"和"多模态（VLM 后端）"两种情况，两者的资源消耗不同。
 
-> **提示**：主模型本身约 19.7 GB（不同量化架构略有浮动），mmproj-F16 额外增加数百 MB，加上 KV cache 和运行时开销，建议系统内存至少 **32 GB**。
+| 场景 | 组件 | 内存/显存需求（估算） |
+|------|------|--------------------|
+| **纯文本** | `llm_service` + 8K 上下文 | ~24–26 GB 内存 |
+| **纯文本** | `llm_service` + 32K 上下文 | ~28–30 GB 内存 |
+| **纯文本** | `llm_service` + GPU 全卸载 + 8K 上下文 | ~20 GB 显存 |
+| **多模态** | LM Studio + mmproj-F16 + 8K 上下文 | ~24–26 GB 显存/内存 + mmproj 额外数百 MB |
+| **多模态** | LM Studio + mmproj-F16 + 32K 上下文 | ~28–30 GB 显存/内存 + mmproj 额外数百 MB |
+
+> **提示**：
+> - 主模型本身约 19.7 GB（不同量化架构略有浮动）。
+> - mmproj-F16 额外增加数百 MB，**仅 VLM 后端加载时占用**。
+> - 加上 KV cache 和运行时开销，建议系统内存至少 **32 GB**。
 
 ### 图 3：内存与上下文长度权衡
 
 ```mermaid
 flowchart LR
-    A["内存 26 GB"] --> A1["8K 上下文<br/>纯 CPU"]
-    B["内存 30 GB"] --> B1["32K 上下文<br/>纯 CPU"]
+    A["内存 26 GB"] --> A1["8K 上下文<br/>纯文本 / 多模态"]
+    B["内存 30 GB"] --> B1["32K 上下文<br/>纯文本 / 多模态"]
     C["显存 20 GB"] --> C1["GPU 全卸载<br/>8K 上下文"]
 
     style A fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
@@ -715,39 +803,49 @@ flowchart LR
 
 ### 6.5 显存不足时的渐进式调整
 
-若出现 `CUDA out of memory`，逐步下调 `--gpu-layers`：
+**纯文本（`llm_service`）**：
 
 ```powershell
 # 先试 20 层
-.\llm_service.exe --gpu-layers 20 --mmproj .\mmproj-F16.gguf
+.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-...gguf --gpu-layers 20
 
 # 若仍 OOM，降到 10 层
-.\llm_service.exe --gpu-layers 10 --mmproj .\mmproj-F16.gguf
+.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-...gguf --gpu-layers 10
 
 # 最后回退纯 CPU
-.\llm_service.exe --gpu-layers 0 --mmproj .\mmproj-F16.gguf
+.\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-...gguf --gpu-layers 0
 ```
 
-### 6.6 替代方案：用 `llm_proxy.exe` / LTB 转发
+**多模态（LM Studio）**：在 LM Studio 的模型设置中逐步降低 GPU 卸载层数（GUI 面板），或降低上下文长度。
 
-如果你不想在本地加载 20 GB 模型，可以改用 `llm_proxy.exe` 或 `llm_proxy_tool.exe` 转发到 LM Studio 或其他 OpenAI 兼容后端：
+### 6.6 不加载大模型的替代方案
+
+如果你不想在本地加载 20 GB 模型，可以改用 `llm_proxy.exe` 或 `llm_proxy_tool.exe` 转发到**云端 OpenAI 兼容 API** 或**其他机器上的 VLM 后端**：
 
 ```powershell
-# 纯对话
-.\llm_proxy.exe --backend-url http://127.0.0.1:1234/v1
+# 转发到云端（纯文本）
+.\llm_proxy.exe --backend-url https://api.deepseek.com/v1 --backend-key sk-xxx
 
-# 需要工具调用
-.\llm_proxy_tool.exe --backend-url http://127.0.0.1:1234/v1 --mcp-reg-agent-app llm_proxy_agent
+# 转发到云端（多模态，若后端支持 VLM）
+.\llm_proxy_tool.exe `
+  --backend-url https://api.some-vlm-provider.com/v1 `
+  --backend-key sk-xxx `
+  --backend-model "some-vlm-model"
 
-# 需要多模态（后端加载 VLM）
-.\llm_proxy_tool.exe --backend-url http://127.0.0.1:1234/v1 --backend-model "qwen2-vl-7b-instruct" --vision
+# 转发到局域网内另一台机器上的 VLM 后端
+.\llm_proxy_tool.exe `
+  --backend-url http://192.168.1.100:1234/v1 `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" `
+  --mcp-reg-agent-app llm_proxy_agent
 ```
 
 详细用法见 [`src/LingoFuse_LLM_Proxy_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_CLI_Guide.md) 与 [`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)。
 
 ### 6.7 客户端如何发图片
 
-**Pascal 客户端（`llm_client.pas`）示例**：
+> **前提**：客户端连接的是 **`llm_proxy` / `llm_proxy_tool`**（不是 `llm_service`）。
+
+**Pascal 客户端（`llm_client_v3.pas`）示例**：
 
 ```pascal
 var
@@ -763,6 +861,8 @@ begin
 end;
 ```
 
+> ⚠️ **`llm_service` 会拒绝图片附件**（返回 `code: -1`，错误信息提示不支持多模态）。请连接到 `llm_proxy` / `llm_proxy_tool`。
+
 ---
 
 ## 七、模型适用场景
@@ -773,7 +873,9 @@ Nemotron 3.5 Lightning Omni **专为智能体设计**。NVIDIA 官方描述其�
 
 在 **PinchBench** 基准测试中，该系列模型达到 **86% 准确率**，完成 10,000 个任务的速度比 Qwen3.6 35B **快 30%**。
 
-### 7.2 多模态任务（v3 新增价值）
+### 7.2 多模态任务（v3 新增价值，需 VLM 后端）
+
+> ⚠️ **以下场景需要 VLM 后端（LM Studio 等）+ `llm_proxy` / LTB 转发**，`llm_service` 不支持。
 
 | 场景 | 说明 |
 |------|------|
@@ -782,13 +884,17 @@ Nemotron 3.5 Lightning Omni **专为智能体设计**。NVIDIA 官方描述其�
 | **文档扫描件** | 上传扫描 PDF 页面，让模型提取关键信息 |
 | **多模态 + 工具** | 一边看图片，一边调用 Pascal 工具完成后续动作 |
 
-### 7.3 日常对话与主线任务
+### 7.3 日常对话与主线任务（纯文本）
 
 30B 的知识储备使模型能够处理复杂的**多步推理**和**长上下文任务**。1M tokens 的上下文窗口使其特别适合需要**大量文档阅读**或**长对话历史**的场景。
+
+> ✅ **纯文本任务可以直接用 `llm_service`**，不需要 VLM 后端。
 
 ### 7.4 CPU 推理（约 20 tokens/s）
 
 由于每个 token 仅激活 3B 参数，CPU 推理速度显著优于传统 30B 稠密模型。在支持 AVX2 的现代 CPU（i5-12 代以上 / Ryzen 5000 以上）上，配合合理的线程数设置，可实现**约 15–25 tokens/s** 的生成速度，满足日常对话和智能体调用的实时性需求。
+
+> **说明**：这是**纯文本推理速度**。多模态推理速度取决于 VLM 后端的实现，通常略慢（视觉 token 需要额外编码）。
 
 ### 7.5 长时间高负载任务（省电费）
 
@@ -846,7 +952,7 @@ pasAgent v3 的推荐 Omni 模型**不支持语音输入与语音输出**。
 | 模态 | 支持状态 |
 |------|:--------:|
 | **文字** | ✅ 支持 |
-| **图片** | ✅ 支持（需 mmproj） |
+| **图片** | ✅ 支持（需 VLM 后端 + mmproj） |
 | **语音（输入 / 输出）** | ❌ **未支持** |
 
 ### 8.2 为什么不做语音支持
@@ -939,15 +1045,19 @@ flowchart TB
 
 ## 十、故障排查
 
-### Q1：模型文件未找到
+### Q1：`llm_service` 提示模型文件未找到
 
 **排查**：
 
-- 确认主模型文件名与你实际使用的架构一致（如 `...-UD-IQ4_XS.gguf` 或 `...-Q4_K_M.gguf`）。
-- 确认文件与 `llm_service.exe` 在同一目录。
+- `llm_service` 的**默认加载文件名**是 `./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf`（旧纯文本模型）。
+- 若要使用 Omni 主模型，**必须显式传 `--model-path`**：
+  ```powershell
+  .\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
+  ```
+- 确认主模型文件名与实际使用的架构一致（如 `...-UD-IQ4_XS.gguf` 或 `...-Q4_K_M.gguf`）。
 - 或使用 `--model-path` 指定绝对路径。
 
-### Q2：加载 IQ 系列架构失败
+### Q2：`llm_service` 加载 IQ 系列架构失败
 
 **症状**：加载 `IQ4_XS` / `IQ4_NL` 时提示不支持。
 
@@ -958,12 +1068,16 @@ flowchart TB
 
 ### Q3：图片问答不工作 / 后端提示"看不到图片"
 
+**重要**：**`llm_service` 不支持多模态**。请确认你连接的是 **`llm_proxy` / `llm_proxy_tool`**，后端是 **VLM（LM Studio 等）**。
+
 **排查顺序**：
 
-1. **是否提供了 mmproj？** 检查启动命令中是否有 `--mmproj` 参数，且路径指向真实存在的文件。
-2. **mmproj 文件是否完整？** 下载可能中断，检查文件大小是否合理（数百 MB）。
-3. **mmproj 版本是否与主模型兼容？** 必须来自**同一仓库**的配套文件，不要混用不同模型的 mmproj。
-4. **`llama-cpp-python` 版本是否够新？** 旧版本可能不支持 VLM 加载。
+1. **连接目标是否正确？** 客户端应连接到 `llm_proxy` / `llm_proxy_tool`，**不是** `llm_service`。
+2. **VLM 后端是否加载了 mmproj？** 在 LM Studio 中，确认主模型和 mmproj 都已选中。
+3. **mmproj 文件是否完整？** 下载可能中断，检查文件大小是否合理（数百 MB）。
+4. **mmproj 版本是否与主模型兼容？** 必须来自**同一仓库**的配套文件，不要混用不同模型的 mmproj。
+5. **LM Studio 的 `/v1/models` 是否能返回模型 ID？** 若不能，LTB / `llm_proxy` 无法连接。
+6. **`--backend-model` 是否指向 VLM？** 若为空，LTB / `llm_proxy` 从 `/v1/models` 拉第一个——可能不是 VLM。
 
 ### Q4：不同架构表现差异大
 
@@ -976,25 +1090,32 @@ flowchart TB
 - 逐一实测，选出本机最优。
 - 若追求稳定，直接用 `Q4_K_M`（兼容性最好）。
 
-### Q5：内存不足（纯 CPU 场景）
+### Q5：`llm_service` 内存不足（纯 CPU 场景）
 
 **解决**：
 
 - 降低 `--context-size`（如 4096）。
 - 减少 `--threads`。
 - 换用体积更小的量化架构（如 `IQ4_XS`）。
-- 若只是纯文本任务，可以**不加载 mmproj**（若服务允许省略该参数）。
 - 改用 `llm_proxy.exe` 转发到 LM Studio（LM Studio 可在有独显的机器上运行）。
 
-### Q6：显存不足（CUDA 场景）
+### Q6：`llm_service` 显存不足（CUDA 场景）
 
 **解决**：
 
 - 逐步降低 `--gpu-layers`（如 20 → 10 → 0）。
 - 降低 `--context-size`。
-- 视觉编码器 mmproj 也可考虑放到 CPU（视实现而定）。
 
-### Q7：CPU 太慢 / 风扇狂转
+### Q7：VLM 后端显存不足（多模态场景）
+
+**解决**：
+
+- 在 LM Studio 中降低 GPU 卸载层数。
+- 降低上下文长度。
+- 视觉编码器 mmproj 也可考虑放到 CPU（视后端实现而定）。
+- 换用更小的量化架构。
+
+### Q8：`llm_service` CPU 太慢 / 风扇狂转
 
 **解决**：
 
@@ -1002,16 +1123,23 @@ flowchart TB
 - 检查 CPU 是否支持 AVX2/AVX512。
 - 换用 `Q4_K_M`（CPU 上有针对性的优化）。
 
-### Q8：启动后立刻退出
+### Q9：启动后立刻退出
 
 **排查**：
 
 - 是否缺少主模型文件（见 Q1）。
-- 是否指定了 mmproj 但文件不存在（会报错退出）。
 - 是否有另一个 `llm_service` 或 `llm_proxy` 已占用 `ipc:llm_service`。
 - 查看窗口中的错误信息。
 
-### Q9：语音问答能不能用？
+### Q10：`llm_service` 收到图片附件时报错
+
+**症状**：客户端发图片给 `llm_service`，返回 `code: -1`。
+
+**解读**：这是**预期行为**——`llm_service` 明确拒绝多模态请求（能力矩阵 `vision: 0`）。
+
+**解决**：改用 `llm_proxy` / `llm_proxy_tool`，后端为 VLM。
+
+### Q11：语音问答能不能用？
 
 **明确回答**：**当前不支持**。原因见第八章「语音支持特别说明」。请使用外部合规的 ASR / TTS 服务与 pasAgent 集成。
 
@@ -1023,7 +1151,7 @@ flowchart TB
 
 | 文档 | 说明 |
 |------|------|
-| [`readme.md`](readme.md) | 项目总览与四大核心组件 |
+| [`readme.md`](readme.md) | 项目总览与四大核心应用组件 |
 | [`Build_Guide.md`](Build_Guide.md) | 编译指南 |
 | [`Pascal_Integration_Guide.md`](Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
 | [`code_generate_mcp.md`](code_generate_mcp.md) | 代码生成器使用手册 |
@@ -1035,13 +1163,12 @@ flowchart TB
 | 文档 | 说明 |
 |------|------|
 | [`src/LingoFuse_LLM_Ecosystem_User_Guide.md`](src/LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大应用组件 + 两条路径） |
-| [`src/LingoFuse_LLM_Service_CLI_guide.md`](src/LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册（含 `--mmproj` 参数详情） |
-| [`src/LingoFuse_LLM_Proxy_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册 |
-| [`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册 |
+| [`src/LingoFuse_LLM_Service_CLI_guide.md`](src/LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册（**明确不支持多模态**） |
+| [`src/LingoFuse_LLM_Proxy_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册（多模态转发） |
+| [`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册（多模态转发 + 工具） |
 | [`src/LingoFuse_LLM_Proxy_Compatibility_Guide.md`](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 250+ OpenAI 兼容后端清单 |
-| [`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全（含 P8 多模态专项） |
+| [`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全（**含 P8 多模态专项**） |
 | [`src/LingoFuse_LLM_Service_Work_Summary.md`](src/LingoFuse_LLM_Service_Work_Summary.md) | 版本演进与架构决策 |
-| [`src/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.md`](src/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.md) | 旧纯文本模型（仅历史参考） |
 
 ---
 
@@ -1051,17 +1178,19 @@ flowchart TB
 
 1. **本模型是"综合选择"，不是"替代"**——`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf` 是 v3 在**多模态 + 性能 + 电费**三维度综合权衡后的推荐；旧模型**仍可用**。
 2. **为什么选它？因为最省电费**——实测对比过 Qwen3.6、Qwen3.8、Meta 系列，**MoE 稀疏激活**让它在长时间高负载下单位任务能耗最低。
-3. **多模态需要 mmproj**——主模型**不含视觉编码器**，必须另外下载 **mmproj-F16**（推荐）或 **mmproj-F32**。
+3. **多模态需要 mmproj，但不由 `llm_service` 加载**——主模型**不含视觉编码器**；mmproj 由 **VLM 后端（如 LM Studio）** 加载，`llm_service` **不支持多模态**。
 4. **量化架构很多，建议多下载几份**——`IQ4_XS`、`IQ4_NL`、`Q4_K_M`、`UD-Q4_K_XL`……**分载、性能、兼容性表现各异**，**自行实测本机最优**。
 5. **语音不支持**——中文普通话 + 方言兼容性太复杂，加上 TTS 的协议与所有权限制，**当前不做**，**未来会找机会支持**。
-6. **部署 = 主模型（可多份）+ mmproj 同目录**——启动时用 `--model-path` 选架构，`--mmproj` 指定视觉编码器。
+6. **两种部署路径**：
+   - **纯文本**：`llm_service --model-path <主模型>`（**无 mmproj**）
+   - **多模态**：VLM 后端加载**主模型 + mmproj**，`llm_proxy` / LTB **原样转发**图片
 
 > 🎯 **记住这句话就够了**：
 >
-> **v3 推荐 Nemotron Omni，不是因为"它是新的"，而是因为实测下来它"最能干活、最省电费、还看得懂图"。至于量化架构——多下载几份，用你自己的机器去选出最佳。**
+> **v3 推荐 Nemotron Omni，不是因为"它是新的"，而是因为实测下来它"最能干活、最省电费、还看得懂图"。多模态走 `llm_proxy` / LTB 转发到 VLM 后端，不要把图片发给 `llm_service`。至于量化架构——多下载几份，用你自己的机器去选出最佳。**
 
 ---
 
-**文档版本**：V3.1（v3 多模态重写版 · 量化架构扩充版——新增第二章「量化架构多样性」；第零章改为"综合选择，非替代"叙事；强调"省电费"的选型理由；全文使用 Mermaid 流程图，禁止字符制图）
+**文档版本**：V3.2（v3 多模态重写版 · 能力边界修正版——明确 `llm_service` 不支持多模态、修正 `--mmproj` 参数不存在、区分"纯文本（llm_service）"与"多模态（VLM 后端 + 转发）"两种部署路径、全文使用 Mermaid 流程图）
 **维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
