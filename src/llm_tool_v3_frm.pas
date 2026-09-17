@@ -1,7 +1,35 @@
 ﻿(*
  * ============================================================================
- * llm_tool_v3_frm — LingoFuse LLM 客户端测试工具（主窗体）v3.2
+ * llm_tool_v3_frm — LingoFuse LLM 客户端测试工具（主窗体）v3.4
  * ============================================================================
+ *
+ * 版本变更（v3.4）
+ * ----------------
+ *   1. 移除 v3.3 的"附件 + Structured Output 冲突拒绝"逻辑。
+ *      现在两种情况都由底层 SDK 直接支持：
+ *        - 有附件 + 有 schema → GenerateWithAttachmentsAndSchema
+ *        - 无附件 + 有 schema → GenerateWithJsonSchema
+ *   2. DoGenerateWithCurrentSettings 的 4 种组合分支简化：
+ *        - 有 schema + 有附件 → GenerateWithAttachmentsAndSchema（新）
+ *        - 有 schema + 无附件 → GenerateWithJsonSchema
+ *        - 无 schema + 有附件 → GenerateWithAttachments
+ *        - 无 schema + 无附件 → Generate
+ *   3. new_session_ButtonClick / test_generate_ButtonClick 中的
+ *      "usedAttachments" 判断简化为 HasAttachments，因为两种情况
+ *      都能成功发送，发送后统一清空附件。
+ *   4. 依赖 SDK：llm_client_v3.pas v3.10（含 GenerateWithAttachmentsAndSchema）。
+ *
+ * 版本变更（v3.3）
+ * ----------------
+ *   1. 新增"结构化输出"TabSheet：
+ *        - EnableStructuredOutputCheckBox（启用开关）
+ *        - SchemaNameEdit（schema 名）
+ *        - StrictCheckBox（strict 严格模式）
+ *        - SchemaMemo（schema 本体）
+ *        - LoadDetectorTemplateButton（一键加载检测器模板）
+ *   2. 新增 DoGenerateWithCurrentSettings 统一分流。
+ *   3. "生成"/"新建会话"按钮统一走 DoGenerateWithCurrentSettings。
+ *   4. Enabled_All / Disable_All 覆盖 TCustomCheckBox。
  *
  * 版本变更（v3.2）
  * ----------------
@@ -66,15 +94,25 @@ type
     new_session_Button: TButton;
 
     { ---- v3.2 新增：附件面板 ---- }
-    AttachmentPanel: TPanel;             // 顶部：附件区域容器
-    AttachmentTopLabel: TLabel;          // 标题："已附加的文件（发送时随消息一起送给模型）"
-    AttachmentListBox: TListBox;         // 附件列表
-    AttachmentBtnsPanel: TPanel;         // 右侧按钮容器
-    BtnAddTextFile: TButton;             // 添加文本文件
-    BtnAddImageFile: TButton;            // 添加图片文件
-    BtnPasteClipboard: TButton;          // 从剪贴板粘贴
-    BtnClearAttachments: TButton;        // 清空附件
-    OpenDialog1: TOpenDialog;            // 文件选择对话框
+    AttachmentPanel: TPanel;
+    AttachmentTopLabel: TLabel;
+    AttachmentListBox: TListBox;
+    AttachmentBtnsPanel: TPanel;
+    BtnAddTextFile: TButton;
+    BtnAddImageFile: TButton;
+    BtnPasteClipboard: TButton;
+    BtnClearAttachments: TButton;
+    OpenDialog1: TOpenDialog;
+
+    { ---- v3.3 新增：结构化输出面板 ---- }
+    StructuredOutput_TabSheet: TTabSheet;          // 新增 Tab 页
+    StructuredHintLabel: TLabel;                   // 顶部说明
+    EnableStructuredOutputCheckBox: TCheckBox;     // 启用开关
+    SchemaNameEdit: TLabeledEdit;                  // schema 名
+    StrictCheckBox: TCheckBox;                     // strict 严格模式
+    LoadDetectorTemplateButton: TButton;           // 一键加载模板
+    SchemaBodyLabel: TLabel;                       // schema 本体标签
+    SchemaMemo: TMemo;                             // schema 本体编辑
 
     { ---- 事件 ---- }
     procedure Update_Sys_Prompt_ButtonClick(Sender: TObject);
@@ -87,6 +125,7 @@ type
     procedure BtnAddImageFileClick(Sender: TObject);
     procedure BtnPasteClipboardClick(Sender: TObject);
     procedure BtnClearAttachmentsClick(Sender: TObject);
+    procedure LoadDetectorTemplateButtonClick(Sender: TObject);
 
   private
     { 当前输出页显示的会话 ID；空表示"尚未选定"。 }
@@ -115,6 +154,11 @@ type
     function DecodeBytesToText(const ABytes: TBytes): string;
     function GuessImageMimeByExt(const AFileName: string): string;
     function BitmapToPngBytes(ABitmap: TBitmap; out ABytes: TBytes; out AError: string): boolean;
+
+    { ---- v3.3：结构化输出分流 ---- }
+    function IsStructuredOutputEnabled: boolean;
+    function DoGenerateWithCurrentSettings(const AContent, APrompt: string;
+      var ASessionId: string; out AError: string): boolean;
 
     { ---- 连接工作线程 ---- }
     procedure Do_Thread_Connect_Done;
@@ -490,7 +534,7 @@ begin
   FImageAttachments[High(FImageAttachments)] := att;
 
   RefreshAttachmentList;
-  DoStatus(Format('已添加图片附件: %s (%d 字节, %d base64 字符)', [att.Name.Text, byteCount, att.DataB64.Text]));
+  DoStatus(Format('已添加图片附件: %s (%d 字节, %d base64 字符)', [att.Name.Text, byteCount, att.DataB64.L]));
 end;
 
 {*
@@ -600,7 +644,171 @@ begin
 end;
 
 { ============================================================================
-  3. 流式事件处理器
+  3. 结构化输出辅助
+  ============================================================================ }
+
+{*
+ * 判断当前是否"开启结构化输出"。
+ * 条件是：勾选启用 且 schema 本体非空（去掉首尾空白）。
+ *}
+function Tllm_tool_v3_form.IsStructuredOutputEnabled: boolean;
+var
+  s: string;
+begin
+  if not EnableStructuredOutputCheckBox.Checked then
+    Exit(False);
+  s := Trim(SchemaMemo.Text);
+  Result := s <> '';
+end;
+
+{*
+ * 统一的 generate 分流入口。
+ *
+ * 优先级与规则（v3.4）：
+ *   1. 有 schema + 有附件 → LLM.GenerateWithAttachmentsAndSchema
+ *   2. 有 schema + 无附件 → LLM.GenerateWithJsonSchema
+ *   3. 无 schema + 有附件 → LLM.GenerateWithAttachments
+ *   4. 无 schema + 无附件 → LLM.Generate
+ *
+ * 说明：
+ *   - 情况 1 是 v3.4 新增能力。SDK 从 v3.10 起支持"附件 + schema"
+ *     的组合，因此不再需要拒绝。
+ *   - 调用方（new_session_ButtonClick / test_generate_ButtonClick）
+ *     需要在成功后自行更新 FActiveSessionId 和清空附件。
+ *}
+function Tllm_tool_v3_form.DoGenerateWithCurrentSettings(
+  const AContent, APrompt: string;
+  var ASessionId: string;
+  out AError: string): boolean;
+var
+  schemaName: string;
+  schemaBody: string;
+  useStructured: boolean;
+  useAttach: boolean;
+begin
+  Result := False;
+  AError := '';
+
+  if LLM = nil then
+  begin
+    AError := '尚未连接 LLM 服务。';
+    Exit;
+  end;
+
+  useStructured := IsStructuredOutputEnabled;
+  useAttach := HasAttachments;
+
+  { 先取 schema 参数，避免多次访问 UI 控件 }
+  schemaName := '';
+  schemaBody := '';
+  if useStructured then
+  begin
+    schemaName := Trim(SchemaNameEdit.Text);
+    if schemaName = '' then
+      schemaName := 'response_schema';
+    schemaBody := SchemaMemo.Text;
+  end;
+
+  { 情况 1：schema + 附件（v3.4 组合方法） }
+  if useStructured and useAttach then
+  begin
+    DoStatus(Format('发起 Structured Output + 附件请求（schema=%s, strict=%s, texts=%d, images=%d）',
+      [schemaName, BoolToStr(StrictCheckBox.Checked, True),
+       length(FTextAttachments), length(FImageAttachments)]));
+    Result := LLM.GenerateWithAttachmentsAndSchema(
+      AContent, APrompt,
+      FTextAttachments, FImageAttachments,
+      schemaName, schemaBody,
+      StrictCheckBox.Checked,
+      ASessionId, AError);
+    Exit;
+  end;
+
+  { 情况 2：纯 schema }
+  if useStructured then
+  begin
+    DoStatus(Format('发起 Structured Output 请求（schema=%s, strict=%s）',
+      [schemaName, BoolToStr(StrictCheckBox.Checked, True)]));
+    Result := LLM.GenerateWithJsonSchema(
+      AContent, APrompt,
+      schemaName, schemaBody,
+      StrictCheckBox.Checked,
+      ASessionId, AError);
+    Exit;
+  end;
+
+  { 情况 3：纯附件 }
+  if useAttach then
+  begin
+    Result := LLM.GenerateWithAttachments(
+      AContent, APrompt,
+      FTextAttachments, FImageAttachments,
+      ASessionId, AError);
+    Exit;
+  end;
+
+  { 情况 4：普通文本 }
+  Result := LLM.Generate(AContent, APrompt, ASessionId, AError);
+end;
+
+{*
+ * "加载检测器模板"按钮：
+ *   把内置的"标签 + 方框 + 置信度"模板填入 SchemaMemo，
+ *   并自动勾选启用 Structured Output 和 strict 模式。
+ *}
+procedure Tllm_tool_v3_form.LoadDetectorTemplateButtonClick(Sender: TObject);
+const
+  DetectorTemplate: string =
+    '{' + sLineBreak +
+    '  "type": "object",' + sLineBreak +
+    '  "properties": {' + sLineBreak +
+    '    "detections": {' + sLineBreak +
+    '      "type": "array",' + sLineBreak +
+    '      "description": "List of detected objects with confidence scores",' + sLineBreak +
+    '      "items": {' + sLineBreak +
+    '        "type": "object",' + sLineBreak +
+    '        "properties": {' + sLineBreak +
+    '          "label": {' + sLineBreak +
+    '            "type": "string",' + sLineBreak +
+    '            "description": "Object class name, e.g. person, car, dog"' + sLineBreak +
+    '          },' + sLineBreak +
+    '          "bbox": {' + sLineBreak +
+    '            "type": "array",' + sLineBreak +
+    '            "description": "Normalized bbox [x_min, y_min, x_max, y_max], values in 0~1",' + sLineBreak +
+    '            "items": { "type": "number", "minimum": 0, "maximum": 1 },' + sLineBreak +
+    '            "minItems": 4,' + sLineBreak +
+    '            "maxItems": 4' + sLineBreak +
+    '          },' + sLineBreak +
+    '          "confidence": {' + sLineBreak +
+    '            "type": "number",' + sLineBreak +
+    '            "description": "Detection confidence, 0.0 to 1.0",' + sLineBreak +
+    '            "minimum": 0,' + sLineBreak +
+    '            "maximum": 1' + sLineBreak +
+    '          }' + sLineBreak +
+    '        },' + sLineBreak +
+    '        "required": ["label", "bbox", "confidence"]' + sLineBreak +
+    '      }' + sLineBreak +
+    '    }' + sLineBreak +
+    '  },' + sLineBreak +
+    '  "required": ["detections"]' + sLineBreak +
+    '}';
+begin
+  SchemaNameEdit.Text := 'object_detection';
+  StrictCheckBox.Checked := True;
+  EnableStructuredOutputCheckBox.Checked := True;
+  SchemaMemo.Lines.Text := DetectorTemplate;
+
+  MainPageControl.ActivePage := StructuredOutput_TabSheet;
+
+  DoStatus('已加载检测器方框标注模板（object_detection）');
+  DoStatus('提示：模板包含 label + bbox + confidence 三个字段，');
+  DoStatus('       bbox 是归一化 [x_min, y_min, x_max, y_max]。');
+  DoStatus('       可编辑 SchemaMemo 微调，然后切到"输入"页点击"生成"。');
+  DoStatus('       v3.4：附件 + schema 现在可以同时启用（会自动走组合方法）。');
+end;
+
+{ ============================================================================
+  4. 流式事件处理器
   ============================================================================ }
 
 procedure Tllm_tool_v3_form.Do_LLM_Chunk(const SessionId, Chunk: string);
@@ -645,7 +853,7 @@ begin
 end;
 
 { ============================================================================
-  4. 按钮事件处理器
+  5. 按钮事件处理器
   ============================================================================ }
 
 {*
@@ -691,14 +899,18 @@ end;
 {*
  * "新建会话"按钮：
  *   1. 创建会话（携带 sys_prompt_Memo 内容作为 system message）
- *   2. 立即用 code_Edit / prompt_edit 发起第一次生成
- *   3. 若存在附件，走 GenerateWithAttachments
+ *   2. 用 DoGenerateWithCurrentSettings 发起首次生成
+ *   3. 成功后清空附件（若本次请求使用了附件）
+ *
+ * v3.4：只要本次请求有附件（无论是否同时携带 schema），
+ *       发送成功后都清空附件，避免下一轮意外重复发送。
  *}
 procedure Tllm_tool_v3_form.new_session_ButtonClick(Sender: TObject);
 var
   sid, err: string;
   sys_msg: TP_String;
   ok: boolean;
+  usedAttachments: boolean;
 begin
   if LLM = nil then
   begin
@@ -724,12 +936,10 @@ begin
   if sys_msg <> '' then
     DoStatus('系统提示词长度: ' + umlIntToStr(sys_msg.L) + ' 字符');
 
-  sid := FActiveSessionId;
+  { v3.4：附件与 schema 现在可以共存；只要使用附件就在成功后清空 }
+  usedAttachments := HasAttachments;
 
-  if HasAttachments then
-    ok := LLM.GenerateWithAttachments(code_edit.Text, prompt_edit.Lines.Text, FTextAttachments, FImageAttachments, sid, err)
-  else
-    ok := LLM.Generate(code_edit.Text, prompt_edit.Lines.Text, sid, err);
+  ok := DoGenerateWithCurrentSettings(code_edit.Text, prompt_edit.Lines.Text, sid, err);
 
   if ok then
   begin
@@ -738,10 +948,10 @@ begin
     ResetOutputHeader(sid);
     sse_Edit.ReadOnly := True;
 
-    if HasAttachments then
+    if usedAttachments then
     begin
-      DoStatus(Format('首发已发送（携带 %d 个文本、%d 个图片附件）', [length(FTextAttachments),
-        length(FImageAttachments)]));
+      DoStatus(Format('首发已发送（携带 %d 个文本、%d 个图片附件）',
+        [length(FTextAttachments), length(FImageAttachments)]));
       { 首发后自动清空附件，避免下一轮意外重复发送 }
       SetLength(FTextAttachments, 0);
       SetLength(FImageAttachments, 0);
@@ -754,22 +964,25 @@ end;
 
 {*
  * "发送 generate 请求"按钮。
- * 存在附件时走 GenerateWithAttachments；否则走 Generate。
- * 发送成功后清空附件。
+ *
+ * v3.4：分发逻辑统一到 DoGenerateWithCurrentSettings：
+ *   - schema + 附件 → GenerateWithAttachmentsAndSchema
+ *   - schema + 无附件 → GenerateWithJsonSchema
+ *   - 无 schema + 有附件 → GenerateWithAttachments
+ *   - 都无 → Generate
  *}
 procedure Tllm_tool_v3_form.test_generate_ButtonClick(Sender: TObject);
 var
   sid, err: string;
   ok: boolean;
+  usedAttachments: boolean;
 begin
   if LLM = nil then Exit;
 
   sid := FActiveSessionId;
+  usedAttachments := HasAttachments;
 
-  if HasAttachments then
-    ok := LLM.GenerateWithAttachments(code_edit.Text, prompt_edit.Lines.Text, FTextAttachments, FImageAttachments, sid, err)
-  else
-    ok := LLM.Generate(code_edit.Text, prompt_edit.Lines.Text, sid, err);
+  ok := DoGenerateWithCurrentSettings(code_edit.Text, prompt_edit.Lines.Text, sid, err);
 
   if ok then
   begin
@@ -778,9 +991,10 @@ begin
     ResetOutputHeader(sid);
     sse_Edit.ReadOnly := True;
 
-    if HasAttachments then
+    if usedAttachments then
     begin
-      DoStatus(Format('已发送（携带 %d 个文本、%d 个图片附件）', [length(FTextAttachments), length(FImageAttachments)]));
+      DoStatus(Format('已发送（携带 %d 个文本、%d 个图片附件）',
+        [length(FTextAttachments), length(FImageAttachments)]));
       SetLength(FTextAttachments, 0);
       SetLength(FImageAttachments, 0);
       RefreshAttachmentList;
@@ -791,7 +1005,7 @@ begin
 end;
 
 { ============================================================================
-  5. sysTimer：驱动软同步与日志
+  6. sysTimer：驱动软同步与日志
   ============================================================================ }
 
 procedure Tllm_tool_v3_form.sysTimerTimer(Sender: TObject);
@@ -809,7 +1023,7 @@ begin
 end;
 
 { ============================================================================
-  6. 连接工作线程
+  7. 连接工作线程
   ============================================================================ }
 
 procedure Tllm_tool_v3_form.Do_Thread_Connect;
@@ -877,10 +1091,22 @@ begin
     sys_prompt_Memo.Text :=
       'llm_proxy 的系统提示词只能在智能体工具端设置!!' + #13#10 + '只有使用 llm_service 才能支持这个功能!!';
   end;
+
+  { v3.4：根据服务端类型提示 Structured Output 是否可用 }
+  if LLM.ServerKind = 'service' then
+  begin
+    DoStatus('[提示] 当前为 llm_service，不支持 Structured Output。');
+    DoStatus('        如需使用"结构化输出"面板，请改用 llm_proxy / llm_proxy_tool。');
+  end
+  else if LLM.ServerKind = 'proxy' then
+  begin
+    DoStatus('[提示] 检测到代理服务端，Structured Output 已可用（需后端支持 JSON Schema）。');
+    DoStatus('        v3.4：附件 + schema 组合已支持，可同时发送图片与 JSON Schema。');
+  end;
 end;
 
 { ============================================================================
-  7. 生命周期
+  8. 生命周期
   ============================================================================ }
 
 procedure Tllm_tool_v3_form.Backcall_DoStatus(Text_: SystemString; const ID: integer);
@@ -916,6 +1142,22 @@ begin
   BtnPasteClipboard.Enabled := True;
   BtnClearAttachments.Enabled := True;
 
+  { 结构化输出面板的初始化 —— 连接前允许编辑 }
+  StructuredOutput_TabSheet.Enabled := True;
+  StructuredHintLabel.Enabled := True;
+  EnableStructuredOutputCheckBox.Enabled := True;
+  SchemaNameEdit.Enabled := True;
+  StrictCheckBox.Enabled := True;
+  LoadDetectorTemplateButton.Enabled := True;
+  SchemaBodyLabel.Enabled := True;
+  SchemaMemo.Enabled := True;
+
+  { 默认值：schema 名、strict 已勾选、本体为空 }
+  if SchemaNameEdit.Text = '' then
+    SchemaNameEdit.Text := 'object_detection';
+  StrictCheckBox.Checked := True;
+  EnableStructuredOutputCheckBox.Checked := False;
+
   RefreshAttachmentList;
 end;
 
@@ -937,7 +1179,8 @@ begin
     if (Components[i] is TControl) then
     begin
       if (Components[i] is TCustomEdit) or (Components[i] is TCustomMemo) or (Components[i] is TSynEditBase) or
-        (Components[i] is TCustomLabel) or (Components[i] is TCustomButton) or (Components[i] is TCustomListBox) then
+        (Components[i] is TCustomLabel) or (Components[i] is TCustomButton) or (Components[i] is TCustomListBox) or
+        (Components[i] is TCustomCheckBox) then
         TControl(Components[i]).Enabled := True;
     end;
 end;
@@ -952,7 +1195,8 @@ begin
     if (Components[i] is TControl) then
     begin
       if (Components[i] is TCustomEdit) or (Components[i] is TCustomMemo) or (Components[i] is TSynEditBase) or
-        (Components[i] is TCustomLabel) or (Components[i] is TCustomButton) or (Components[i] is TCustomListBox) then
+        (Components[i] is TCustomLabel) or (Components[i] is TCustomButton) or (Components[i] is TCustomListBox) or
+        (Components[i] is TCustomCheckBox) then
         TControl(Components[i]).Enabled := False;
     end;
 end;
