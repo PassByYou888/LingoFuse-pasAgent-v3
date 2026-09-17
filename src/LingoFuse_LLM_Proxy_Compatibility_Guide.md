@@ -1,7 +1,7 @@
 # LingoFuse LLM Proxy 兼容性指南
 
 > **适用组件**：`llm_proxy.exe`、`llm_proxy_tool.exe`（LTB）
-> **文档版本**：v4.0（v3 架构重写版 · 250+ 条目扩充）
+> **文档版本**：v4.1（v3 架构重写版 · 250+ 条目扩充 · 一致性修正版）
 > **最后更新**：2026-09-17
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
@@ -59,10 +59,11 @@ flowchart LR
 | `choices[0].delta.reasoning_content` | `_extract_delta()` | 映射为 `think` 事件 |
 | `data: [DONE]` | `stream_chat()` 的 `return` | 流结束标记 |
 | `choices[0].delta.tool_calls`（LTB 专属） | `stream_chat()` 的累加器 | 按 `index` 拼接 `arguments` 字符串 |
+| `image_url` 内容部分（多模态） | `stream_chat()` 原样转发 | **需显式传 `--vision`**；详见第 11 节 |
 
 ---
 
-## 二、云 API 提供商（国际）—— 40+ 家
+## 二、云 API 提供商（国际）—— 38+ 家
 
 ### 2.1 主流云 API
 
@@ -107,7 +108,7 @@ flowchart LR
 | Voyage AI（重排序） | 重排序为主 | `/v1/rerank` | — | [voyageai.com](https://www.voyageai.com) |
 | Jina AI（重排序） | 重排序为主 | `/v1/rerank` | — | [jina.ai](https://jina.ai) |
 
-### 2.2 云 API 提供商（中国区）—— 20+ 家
+### 2.2 云 API 提供商（中国区）—— 18+ 家
 
 | 平台 | Base URL | 路径 | 链接 |
 |------|----------|------|------|
@@ -243,7 +244,7 @@ flowchart LR
 
 ---
 
-## 六、桌面客户端（自带 OpenAI 兼容 Server）—— 25+ 个
+## 六、桌面客户端（自带 OpenAI 兼容 Server）—— 24+ 个
 
 | 工具 | 平台 | 多模态 | 链接 |
 |------|------|:------:|------|
@@ -270,8 +271,9 @@ flowchart LR
 | **Fello** | macOS / Windows / Linux | ❌ | [npmjs.com/@zythum02/fello-server](https://www.npmjs.com/package/@zythum02/fello-server) |
 | **Chatbox** | Windows / macOS / Linux | ✅ | [chatboxai.app](https://chatboxai.app) |
 | **Cherry Studio** | Windows / macOS / Linux | ✅ | [cherry-ai.com](https://cherry-ai.com) |
-| **NextChat** | Windows / macOS / Linux | ✅ | [github.com/ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) |
-| **ChatGPT-Next-Web** | Web / 桌面 | ✅ | [github.com/ChatGPTNextWeb/ChatGPT-Next-Web](https://github.com/ChatGPTNextWeb/ChatGPT-Next-Web) |
+| **NextChat** | Windows / macOS / Linux（同时是 Web UI，见第 7 节） | ✅ | [github.com/ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) |
+
+> **说明**：`NextChat`（原名 `ChatGPT-Next-Web`）同时是"桌面客户端"和"Web UI"，因此在第 6 节与第 7 节均出现。仓库 URL 相同。
 
 ---
 
@@ -280,7 +282,7 @@ flowchart LR
 | Web UI | 说明 | 链接 |
 |--------|------|------|
 | **Open WebUI** | 最佳 HomeLab 界面 | [github.com/open-webui/open-webui](https://github.com/open-webui/open-webui) |
-| **NextChat** | 轻量响应式 | [github.com/ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) |
+| **NextChat** | 轻量响应式（同时提供桌面版，见第 6 节） | [github.com/ChatGPTNextWeb/NextChat](https://github.com/ChatGPTNextWeb/NextChat) |
 | **Lobe Chat** | 现代 AI 聊天界面 | [github.com/lobehub/lobe-chat](https://github.com/lobehub/lobe-chat) |
 | **ChuanhuChatGPT** | 轻快好用 | [github.com/GaiZhenbiao/ChuanhuChatGPT](https://github.com/GaiZhenbiao/ChuanhuChatGPT) |
 | **ChatGPT-web** | 单页简洁界面 | [github.com/Niek/chatgpt-web](https://github.com/Niek/chatgpt-web) |
@@ -302,7 +304,7 @@ flowchart LR
 
 ---
 
-## 八、嵌入 / 重排序 / TTS / STT（部分支持）—— 25+ 个
+## 八、嵌入 / 重排序 / TTS / STT（部分支持）—— 21+ 个
 
 以下服务暴露 OpenAI 兼容端点，但 `llm_proxy.exe`（以及 LTB）**只转发 `/v1/chat/completions`**。如需要这些能力，客户端需直连。
 
@@ -445,6 +447,37 @@ curl -N -X POST http://127.0.0.1:1234/v1/chat/completions \
 - 所有分片的 `arguments` 应按 `index` 拼接后形成合法 JSON（如 `{"a":5,"b":7}`）。
 - 若后端**始终返回纯文本而不触发 `tool_calls`**，说明模型不支持 Function Calling，或未正确配置 `tool_choice`。
 
+### 11.2 多模态验证（需要图片问答时）
+
+```bash
+curl -N -X POST http://127.0.0.1:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"<VLM 模型 id>",
+    "messages":[{
+      "role":"user",
+      "content":[
+        {"type":"text","text":"描述这张图"},
+        {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."}}
+      ]
+    }],
+    "stream":true
+  }'
+```
+
+**判据**：
+
+- 后端返回的文字描述中应**提到图片内容**（如颜色、物体、场景）。
+- 若后端回复"我没看到图片"或忽略图片，说明：
+  - 后端未加载 VLM（加载的是纯文本模型）。
+  - 或后端不支持 OpenAI 多模态 `image_url` 格式。
+- **LingoFuse 侧的额外步骤**：接入 `llm_proxy` / LTB 时，**必须显式传 `--vision`**——否则图片附件会被服务端**拒绝**（返回 `code: -1`），根本不会到达后端。
+
+详见：
+- [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) 第 5.5 节
+- [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) 第 4.5 节
+- [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8 系列
+
 ---
 
 ## 十二、已知限制
@@ -461,7 +494,10 @@ curl -N -X POST http://127.0.0.1:1234/v1/chat/completions \
 | 未校验 Content-Type | 后端返回非 SSE 时静默结束，客户端收到空 `finish` |
 | 不支持并发工具执行 | LTB 按顺序执行 `tool_calls`，不并发。单轮多工具场景下，串行等待可能增加延迟。 |
 | LTB 工具列表不支持运行时刷新 | 启动时拉取一次，运行期间不感知后端工具变化。需重启 LTB 才能感知。 |
-| 多模态 | `llm_proxy` / LTB **原样转发**图片附件到后端；**是否支持取决于后端**。`llm_service` 不支持多模态。 |
+| **多模态需显式 `--vision`** | `llm_proxy` / LTB **原样转发**图片附件到后端；**必须传 `--vision` 才能启用**（否则图片附件被拒绝，返回 `code: -1`）。**是否支持取决于后端**。`llm_service` 不支持多模态。 |
+| **LTB 多模态 + 工具循环** | 图片只在**首轮**发送完整内容；后续工具调用轮次使用**历史占位符**（如 `[image: chart.png]`）。这避免了 token 爆炸，但后端在后续轮次看不到原图。 |
+| **LTB `--no-tools` + `--vision`** | `--no-tools` 会禁用所有工具行为，退化为纯文本代理。此时多模态转发**仍然有效**（如果传了 `--vision`）。但工具能力消失。 |
+| **LTB `--vision` 未传 + 工具调用** | 图片请求被拒绝（`code: -1`），工具调用也不会发生。需同时传 `--vision`（若需要图片）和保持 `--enable-tools`（默认开启）。 |
 
 ---
 
@@ -472,33 +508,33 @@ curl -N -X POST http://127.0.0.1:1234/v1/chat/completions \
 ```mermaid
 pie showData
     title llm_proxy / LTB 支持的 250+ 后端分布
-    "云 API（国际）" : 40
-    "云 API（中国区）" : 20
+    "云 API（国际）" : 38
+    "云 API（中国区）" : 18
     "本地推理服务器" : 30
     "网关/代理/路由" : 35
     "API 聚合/中转站" : 25
-    "桌面客户端" : 25
+    "桌面客户端" : 24
     "Web UI" : 20
-    "嵌入/重排序/TTS/STT" : 25
+    "嵌入/重排序/TTS/STT" : 21
     "智能体框架" : 20
     "RAG 平台" : 20
 ```
 
 | 类别 | 数量 |
 |------|:----:|
-| 云 API 提供商（国际） | **40+** |
-| 云 API 提供商（中国区） | **20+** |
+| 云 API 提供商（国际） | **38+** |
+| 云 API 提供商（中国区） | **18+** |
 | 本地推理服务器 | **30+** |
 | 网关 / 代理 / 路由 | **35+** |
 | API 聚合 / 中转站 | **25+** |
-| 桌面客户端（自带 Server） | **25+** |
+| 桌面客户端（自带 Server） | **24+** |
 | Web UI（OpenAI 兼容前端） | **20+** |
-| 嵌入 / 重排序 / TTS / STT（部分支持） | **25+** |
+| 嵌入 / 重排序 / TTS / STT（部分支持） | **21+** |
 | 智能体框架 | **20+** |
 | RAG 平台 | **20+** |
 | **合计** | **250+** |
 
-> **说明**：该清单对 **`llm_proxy.exe`（纯文本代理）与 `llm_proxy_tool.exe`（LTB，服务端工具执行）均适用**。LTB 的核心差异仅在于它会在请求中注入 `tools` 字段，并要求后端在需要时返回标准 `tool_calls` 结构。基础 SSE 客户端完全一致。
+> **说明**：该清单对 **`llm_proxy.exe`（纯文本代理）与 `llm_proxy_tool.exe`（LTB，服务端工具执行）均适用**。LTB 的核心差异仅在于它会在请求中注入 `tools` 字段，并要求后端在需要时返回标准 `tool_calls` 结构。基础 SSE 客户端完全一致。多模态转发同样适用——**需显式传 `--vision`**。
 
 ---
 
@@ -506,22 +542,25 @@ pie showData
 
 | 文档 | 说明 |
 |------|------|
-| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心组件 + 两条路径） |
+| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心应用组件 + 两条路径） |
 | [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册 |
 | [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册 |
 | [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册 |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法 |
+| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法（含 P8 多模态专项） |
 | [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
+| [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档 |
 
 ### 根目录相关文档
 
 | 文档 | 说明 |
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
+| [`../Build_Guide.md`](../Build_Guide.md) | 编译指南 |
 | [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
 
 ---
 
-**文档版本**：v4.0（v3 架构重写版 · 250+ 条目扩充 · 全部条目附链接）  
-**维护者**：LingoFuse-pasAgent 团队  
+**文档版本**：v4.1（v3 架构重写版 · 250+ 条目扩充 · 一致性修正版——修正各节声称数量与实际条目数一致、移除 `NextChat` / `ChatGPT-Next-Web` 重复、补充多模态 `--vision` 参数与验证章节、更新 LTB `--no-tools` + `--vision` 组合限制）
+
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
