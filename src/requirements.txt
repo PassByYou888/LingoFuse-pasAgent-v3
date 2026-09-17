@@ -1,0 +1,82 @@
+# =============================================================================
+# LingoFuse-pasAgent - Python dependency manifest
+#
+# The packages below are organized by which component needs them. You do
+# NOT need to install every package: install only the sections that
+# correspond to the services you plan to run or build.
+#
+# All packages are installed with: pip install -r requirements.txt
+# (which installs every section). To install a single section, copy the
+# lines from that section into a separate command or file.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Section 1: Required for the MCP gateway (mcp_api_tool.py)
+# -----------------------------------------------------------------------------
+# The MCP gateway is the path-A entry point: it exposes Pascal tools as
+# MCP tools that an MCP-aware client (LM Studio, Claude Desktop, ...)
+# can call.
+#
+# fastmcp provides the MCP protocol implementation; pydantic is its
+# transitive requirement for schema validation. tzdata is used by the
+# standard library's zoneinfo on Windows and is needed at runtime when
+# any timestamp handling touches timezones.
+fastmcp
+pydantic
+tzdata
+
+
+# -----------------------------------------------------------------------------
+# Section 2: Required for the HTTP bridge (lingofuse/bridge.py)
+# -----------------------------------------------------------------------------
+# The bridge is a small HTTP-to-LingoFuse passthrough gateway. It is
+# optional: only install this section if you plan to call LingoFuse
+# services from a web browser or a non-Python HTTP client.
+#
+# requests is used by bridge.py for one optional probe. Note: since the
+# sse_client was rewritten on top of http.client, neither llm_proxy.py
+# nor llm_proxy_tool.py imports requests at runtime. requests is listed
+# in this section ONLY because bridge.py still uses it.
+flask
+requests
+
+
+# -----------------------------------------------------------------------------
+# Section 3: Required for local inference (llm_service.py)
+# -----------------------------------------------------------------------------
+# llm_service.py loads a GGUF model through llama-cpp-python. Install
+# this section only if you want to run the local inference server.
+#
+# Note: llama-cpp-python ships in two flavors:
+#   * CPU build:    pip install llama-cpp-python
+#   * CUDA build:   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+# The plain "llama-cpp-python" line below installs the CPU build if no
+# prebuilt wheel is available for your platform. See
+# llama_cpp_python_guide.md for the full matrix.
+#
+# jinja2 is needed only when a custom chat template is provided. The
+# default template comes from the GGUF metadata and does not require
+# jinja2 to be installed separately (llama-cpp-python bundles its own
+# template engine). Add it if you use --chat-template.
+llama-cpp-python
+jinja2
+
+
+# -----------------------------------------------------------------------------
+# Section 4: Build-time only (PyInstaller)
+# -----------------------------------------------------------------------------
+# These packages are only needed when building the EXEs from source.
+# They are not needed to run a pre-built release. Install this section
+# on your build machine, not on end-user machines.
+pyinstaller
+
+
+# -----------------------------------------------------------------------------
+# Section 5: Development and testing (optional)
+# -----------------------------------------------------------------------------
+# These are convenience packages for working on the codebase. They are
+# not required by any shipped component.
+pytest
+black
+flake8
