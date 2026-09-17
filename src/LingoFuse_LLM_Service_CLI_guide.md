@@ -1,7 +1,7 @@
 # LingoFuse LLM Service 命令行使用手册
 
 > **适用程序**：`llm_service.exe`（Windows）/ `llm_service`（Linux）
-> **文档版本**：v3.0（v3 架构重写版）
+> **文档版本**：v3.1（v3 架构重写版 · 能力边界修正版）
 > **最后更新**：2026-09-17
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
@@ -11,6 +11,20 @@
 > - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
 > - [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) — 版本演进
 > - [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) — 推荐模型下载
+
+---
+
+## ⚠️ 阅读前必读：能力边界
+
+**在阅读本文之前，请先理解以下三条关键事实**：
+
+| # | 事实 | 说明 |
+|:-:|------|------|
+| 1 | **`llm_service` 是纯文本推理服务** | 本地推理路径（llama.cpp）**不支持多模态**。**没有** `--mmproj` 参数。 |
+| 2 | **多模态请用 `llm_proxy` / `llm_proxy_tool`** | 由 **VLM 后端**（如 LM Studio）加载多模态模型 + mmproj，代理**原样转发**图片附件。 |
+| 3 | **`llm_service` 是 v3 的辅助验证工具** | 它仍然可以**独立使用**（不需要信标、不需要工具提供者、不需要 MCP），但不再是"三种核心服务端之一"。 |
+
+> **为什么 `llm_service` 不支持多模态？** 本地推理路径的视觉编码器加载尚未实现。这是 v3 的已知边界，详见 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8-3。
 
 ---
 
@@ -28,19 +42,19 @@ v3 中，`llm_service` **不再是"三种核心服务端之一"**，而是：
 | **可嵌入的小工具** | 可以**脱离整个 pasAgent 生态**，单独作为"本地 LLM 助手"嵌入到你的 Pascal 项目 |
 
 > 💡 **生产环境推荐**：用 `llm_proxy` / `llm_proxy_tool` 转发到 LM Studio 等成熟后端。
-> **`llm_service` 的价值在于**：完全离线、深度嵌入、快速验证。
+> **`llm_service` 的价值在于**：完全离线、深度嵌入、快速验证、纯文本任务。
 
 ### 图 1：llm_service 在生态中的位置
 
 ```mermaid
 flowchart LR
     subgraph CLIENTS["🖥️ 客户端"]
-        C1["📦 llm_client<br/>（Pascal SDK）"]
+        C1["📦 llm_client_v3<br/>（Pascal SDK）"]
         C2["🌍 任意 LingoFuse 客户端"]
     end
 
     subgraph SERVICE["🟢 llm_service"]
-        S["llm_service.exe<br/>本地推理"]
+        S["llm_service.exe<br/>本地推理（纯文本）"]
     end
 
     subgraph MODELS["📦 本地 GGUF 模型"]
@@ -75,7 +89,7 @@ flowchart LR
 
 ### 2.1 最小启动
 
-前提：当前工作目录下有 `NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf` 模型文件，或通过 `--model-path` 指定。
+前提：当前工作目录下有 `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf` 模型文件，或通过 `--model-path` 指定。
 
 **Windows（PowerShell）**：
 
@@ -110,24 +124,26 @@ cd /opt/llm
 服务默认从**当前工作目录**加载**固定路径**：
 
 ```
-NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
+NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf
 ```
 
 **要求**：
 
 - 文件名大小写严格匹配，不要重命名。
 - 文件必须与 `llm_service.exe` 位于同一目录（或通过 `--model-path` 指定路径）。
-- 文件完整，约 **20 GB**。
+- 文件完整，约 **19.7 GB**。
 
 未找到时服务将报错退出：
 
 ```
-[ERROR] Model file not found: ./NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
+[ERROR] Model file not found: ./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf
 ```
 
-> **注意**：`llm_service.exe` **不会扫描同目录下的所有 gguf 文件**。默认只加载上述固定文件名；如使用其他模型，必须通过 `--model-path` 显式指定。
+> **注意**：
 >
-> **模型下载**：请参考 [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)。
+> - `llm_service.exe` **不会扫描同目录下的所有 gguf 文件**。默认只加载上述固定文件名；如使用其他模型，**必须**通过 `--model-path` 显式指定。
+> - 若要用**推荐的多模态 Omni 模型**（`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf`）做**纯文本**推理，**必须显式传 `--model-path`**。
+> - **模型下载**：请参考 [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)。
 
 ### 3.2 动态库必须可加载
 
@@ -142,6 +158,7 @@ NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
 - `LingoFuse64.dll` / `liblingofuse.so` 是否在系统 `PATH`，或在 exe 同目录。
 - 动态库位数与 exe 一致（64 位 vs 32 位）。
 - 依赖的 `z_ipc_64.dll` 是否可被找到。
+- 是否安装了 **VC++ Redistributable（VS2022）**（预编译 DLL 需要）。
 
 ### 3.3 工作目录建议
 
@@ -199,7 +216,7 @@ flowchart LR
     style E fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
 ```
 
-启动成功后打印状态横幅：
+启动成功后打印状态横幅（字段与源码 `print_service_status()` 一致）：
 
 ```
 ======================================================================
@@ -207,31 +224,37 @@ flowchart LR
 ======================================================================
   Server kind             : service
   Backend                 : llama_cpp
-  Model path              : ./NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
+  Model path              : ./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf
   Context size requested  : auto (model maximum)
   Context size actual     : 32768
   Default max tokens      : 4096
   CPU threads             : 6
   GPU layers offloaded    : -1
+  Thinking (global)       : False
+  Thinking (DEFAULT_)     : False
+----------------------------------------------------------------------
   LingoFuse endpoint      : ipc:llm_service
   Service app name        : LLM_Service
   Notify API name         : llm_stream
   Session idle timeout(s) : 600
   Queue max size          : 256
   Max sessions            : 1024
-  Chat template           : (model built-in)
-  Reasoning budget msg    : "好的，我用简体中文来思考。禁止使用英文。\n"
+  Max history per session : 512
   Log level               : 1
 ----------------------------------------------------------------------
-  Watchdog policy         : reclaim only when idle past the timeout
-                            AND the client app is offline
-  Multimodal support      : 不支持（图片问答请用 llm_proxy / llm_proxy_tool
-                            转发到支持多模态的后端）
+  Chat template           : (none - create_chat_completion fallback)
+  Reasoning budget msg    : "(empty)"
+  Attachments             : text only (image requires VLM)
+  Vision                  : disabled (local VLM path not implemented - V2 TODO)
+----------------------------------------------------------------------
+  Watchdog policy         : reclaim only when idle past the timeout AND the
+                            client app is offline
+----------------------------------------------------------------------
   Supported APIs          : generate, create_session, close_session, ...
   Unsupported APIs        : (none)
 ======================================================================
-[Service] LLM Service is running on ipc:llm_service
-[Service] Press Ctrl+C to stop...
+[INFO] LLM Service is running on ipc:llm_service
+[INFO] Press Ctrl+C to stop...
 ```
 
 ---
@@ -243,7 +266,7 @@ flowchart LR
 #### `--model-path PATH`
 
 - **作用**：指定 GGUF 模型文件路径。
-- **默认**：`./NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf`
+- **默认**：`./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf`
 - **环境变量**：`LLM_MODEL_PATH`
 
 **Windows（PowerShell）**：
@@ -380,114 +403,11 @@ flowchart LR
 ./llm_service --system-message "You are a helpful assistant."
 ```
 
-### 5.2 多模型参数
-
-> **v3 新增**：`llm_service` 支持在一个进程内**同时加载多个 GGUF 模型**。每个模型有独立的上下文窗口、tokenizer、KV cache，客户端可在创建会话时**指定目标模型**。
-
-#### `--models-config PATH`
-
-- **作用**：指定多模型配置文件（JSON 格式），一次性加载多个模型。
-- **默认**：（空）——此时使用 `--model-path` 指定的单模型
-- **环境变量**：`LLM_MODELS_CONFIG`
-
-**配置文件示例**（`models.json`）：
-
-```json
-{
-  "default_model": "nemotron",
-  "models": {
-    "nemotron": {
-      "path": "./NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf",
-      "context_size": 0,
-      "gpu_layers": -1,
-      "threads": 6
-    },
-    "qwen": {
-      "path": "./Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-      "context_size": 8192,
-      "gpu_layers": -1,
-      "threads": 4
-    }
-  }
-}
-```
-
-**Windows（PowerShell）**：
-
-```powershell
-.\llm_service.exe --models-config .\models.json
-```
-
-**Linux（Shell）**：
-
-```bash
-./llm_service --models-config ./models.json
-```
-
-> ⚠️ **具体的配置字段名以实际实现为准**。请在实际部署前验证配置文件被正确解析。
-
-#### 多模型的路由语义
-
-| 场景 | 行为 |
-|------|------|
-| `create_session` **不指定** `model_id` | 使用 `default_model` |
-| `create_session` **指定** `model_id` | 会话绑定到该模型 |
-| `generate` 请求的 `session_id` 已绑定模型 | 自动路由到该模型 |
-| `generate` 请求携带 `options.model` | 覆盖会话默认模型（仅对新会话生效） |
-| 请求的 `model_id` 不存在 | 返回 `code: -1`，错误信息列出可用模型 |
-
-#### 能力矩阵的多模型化
-
-当启用多模型时，`get_api_capabilities` 返回**每个模型的能力**：
-
-```json
-{
-  "code": 0,
-  "server_kind": "service",
-  "capabilities": {
-    "generate": 1,
-    "create_session": 1,
-    "set_system_message": 1,
-    "health": 1
-  },
-  "models": {
-    "nemotron": {
-      "context_size": 32768,
-      "max_tokens": 4096,
-      "vision": 0
-    },
-    "qwen": {
-      "context_size": 8192,
-      "max_tokens": 2048,
-      "vision": 0
-    }
-  }
-}
-```
-
-> ⚠️ **具体的响应结构以实际实现为准**。
-
-#### 多模型的资源约束
-
-多模型并行会**线性放大内存/显存占用**：
-
-| 场景 | 内存需求（估算） |
-|------|:---------------:|
-| 单 Nemotron 30B IQ4_NL，8K ctx | ~24 GB |
-| Nemotron 30B + Qwen 7B | ~30 GB |
-| Nemotron 30B + Qwen 7B + Llama 3B | ~33 GB |
-
-**建议**：
-
-- 优先给**主模型**分配 GPU 层数（`gpu_layers: -1`）
-- 次要模型可考虑纯 CPU（`gpu_layers: 0`）
-- 每个模型的 `context_size` **独立配置**，按优先级分配
-
-### 5.3 多模态支持状态
+### 5.2 多模态支持状态
 
 > ⚠️ **`llm_service` 当前不支持多模态（图片问答）**。
 
-**原因**：多模态需要视觉编码器（mmproj / 视觉塔）的支持，本地推理路径尚未实现。
+**原因**：多模态需要视觉编码器（mmproj / 视觉塔）的支持，本地推理路径尚未实现。`llm_service` **没有** `--mmproj` 参数。
 
 **替代方案**：
 
@@ -504,7 +424,11 @@ flowchart LR
   --backend-model "qwen2-vl-7b-instruct"
 ```
 
-### 5.4 LingoFuse 服务参数
+> **客户端行为**：若 `llm_service` 收到携带 `attachments` 数组的请求，其中**只有文本附件**会被接受并合并到用户消息；**图片附件会被明确拒绝**（返回 `code: -1`，错误信息提示本地 VLM 路径未实现）。
+>
+> 这与 `llm_proxy` / LTB 的行为不同：后者**原样转发**图片，由后端决定是否支持。
+
+### 5.3 LingoFuse 服务参数
 
 #### `--endpoint ADDRESS`
 
@@ -576,7 +500,7 @@ flowchart LR
 ./llm_service --timeout 10000
 ```
 
-### 5.5 服务行为参数
+### 5.4 服务行为参数
 
 #### `--session-timeout SECONDS`
 
@@ -670,7 +594,25 @@ flowchart TB
 ./llm_service --max-sessions 64
 ```
 
-### 5.6 聊天模板与推理参数
+#### `--max-history N`
+
+- **作用**：每个会话保留的最大消息数。超出的最老消息会被丢弃。
+- **默认**：`512`
+- **环境变量**：`LLM_MAX_HISTORY`
+
+**Windows（PowerShell）**：
+
+```powershell
+.\llm_service.exe --max-history 1024
+```
+
+**Linux（Shell）**：
+
+```bash
+./llm_service --max-history 1024
+```
+
+### 5.5 聊天模板与推理参数
 
 #### `--chat-template PATH`
 
@@ -700,23 +642,50 @@ flowchart TB
 #### `--reasoning-budget-message "TEXT"`
 
 - **作用**：在思考段开头插入的引导文本，用于引导模型用特定语言思考。
-- **默认**：`好的，我用简体中文来思考。禁止使用英文。\n`
+- **默认**：`""`（**空字符串**）
 - **环境变量**：`LLM_REASONING_BUDGET_MESSAGE`
 - **模板变量名**：`reasoning_budget_message`
 
-> **注意**：此参数**仅在提供了自定义 `--chat-template`** 且模板中引用了 `reasoning_budget_message` 变量时才生效。使用模型内置模板时，该参数会被忽略。
+> **重要**：此参数**仅在提供了自定义 `--chat-template`** 且模板中引用了 `reasoning_budget_message` 变量时才生效。使用模型内置模板时，该参数会被忽略。
+>
+> **默认是空字符串**——如果你希望模型用特定语言思考，请显式传入该参数，例如：
+>
+> ```powershell
+> .\llm_service.exe --chat-template .\chat_template.jinja --reasoning-budget-message "好的，我用简体中文来思考。禁止使用英文。"
+> ```
+
+### 5.6 Thinking 模式
+
+**默认行为**：**不启用 thinking**（`DEFAULT_THINKING = False`）。
+
+**优先级**（从高到低）：
+
+1. **单次请求**：`generate` 的 `options.thinking`
+2. **命令行**：`--thinking` / `--no-thinking`
+3. **环境变量**：`LLM_THINKING`（`1` / `true` / `yes` / `0` / `false` / `no` / `on` / `off`）
+4. **模块常量**：`DEFAULT_THINKING`
 
 **Windows（PowerShell）**：
 
 ```powershell
-.\llm_service.exe --reasoning-budget-message "Think in English first."
+# 显式启用（覆盖一切低优先级设置）
+.\llm_service.exe --thinking
+
+# 显式禁用（覆盖环境变量）
+.\llm_service.exe --no-thinking
 ```
 
 **Linux（Shell）**：
 
 ```bash
-./llm_service --reasoning-budget-message "Think in English first."
+# 显式启用
+./llm_service --thinking
+
+# 显式禁用
+./llm_service --no-thinking
 ```
+
+> **Thinking 由提示词层面控制**：`llm_service` 在渲染 prompt 时，根据 effective thinking 值，在 prompt 末尾强制拼接 `<think>` / `</think>` 标记。这是与 `llm_proxy` / LTB 的关键区别——**后者不做策略，只转发后端的 `reasoning_content`**。
 
 ### 5.7 日志参数
 
@@ -786,7 +755,6 @@ flowchart TB
 | 环境变量 | 对应参数 | 示例值 |
 |----------|----------|--------|
 | `LLM_MODEL_PATH` | `--model-path` | `D:\models\qwen.gguf` |
-| `LLM_MODELS_CONFIG` | `--models-config` | `./models.json` |
 | `LLM_CONTEXT_SIZE` | `--context-size` | `8192` |
 | `LLM_MAX_TOKENS` | `--max-tokens` | `2048` |
 | `LLM_THREADS` | `--threads` | `8` |
@@ -799,8 +767,10 @@ flowchart TB
 | `LLM_SESSION_TIMEOUT` | `--session-timeout` | `120` |
 | `LLM_QUEUE_MAX_SIZE` | `--queue-max-size` | `256` |
 | `LLM_MAX_SESSIONS` | `--max-sessions` | `1024` |
+| `LLM_MAX_HISTORY` | `--max-history` | `512` |
 | `LLM_CHAT_TEMPLATE` | `--chat-template` | `./chat_template.jinja` |
 | `LLM_REASONING_BUDGET_MESSAGE` | `--reasoning-budget-message` | `Think in Chinese.` |
+| `LLM_THINKING` | `--thinking` / `--no-thinking` | `1` / `0` |
 | `LLM_LOG_LEVEL` | `--log-level` | `1` |
 | `LLM_DEBUG` | `--debug` | `1` / `true` / `yes` |
 | `LLM_QUIET` | `--quiet` | `1` / `true` / `yes` |
@@ -919,21 +889,7 @@ source ~/.bashrc
 ./llm_service --gpu-layers 0
 ```
 
-### 场景 4：多模型并行
-
-**Windows（PowerShell）**：
-
-```powershell
-.\llm_service.exe --models-config .\models.json
-```
-
-**要点**：
-
-- `models.json` 中的每个模型独立配置 `context_size` / `gpu_layers` / `threads`
-- 客户端在 `create_session` 时指定 `model_id`
-- 参见本文档 5.2 节
-
-### 场景 5：与 llm_proxy 同机共存
+### 场景 4：与 llm_proxy 同机共存
 
 **Windows（PowerShell）**：
 
@@ -970,7 +926,7 @@ source ~/.bashrc
 - 二者**不能**共享同一个 `--endpoint` 和 `--app-name`。
 - 客户端连接时相应调整 `--endpoint` 与 `--server-app`。
 
-### 场景 6：跨机部署（TCP 模式）
+### 场景 5：跨机部署（TCP 模式）
 
 **GPU 工作站（服务端）**：
 
@@ -991,7 +947,7 @@ source ~/.bashrc
 - 防火墙需放行 `9898` 端口。
 - 客户端通过 `--endpoint` 指定远程 IP。
 
-### 场景 7：日志调试
+### 场景 6：日志调试
 
 ```powershell
 .\llm_service.exe --debug
@@ -1000,18 +956,18 @@ source ~/.bashrc
 - 打印每个 chunk 的 JSON、客户端可达性警告、watchdog 决策日志。
 - 仅用于排查，生产环境请用 `--quiet`。
 
-### 场景 8：自定义系统提示词
+### 场景 7：自定义系统提示词
 
 ```powershell
 .\llm_service.exe --system-message "你是一个代码声明转换助手，只转换声明部分，禁止 markdown 输出。"
 ```
 
-### 场景 9：把 llm_service 嵌入自己的项目
+### 场景 8：把 llm_service 嵌入自己的项目
 
 `llm_service` 可以**脱离 pasAgent 生态单独使用**。典型用法：
 
 ```
-1. 只引入 llm_service.exe + llm_client.pas
+1. 只引入 llm_service.exe + llm_client_v3.pas
 2. 在你的 Pascal 项目中：
    - 启动 llm_service 进程（或让它常驻）
    - 通过 TLLMClient 连接 ipc:llm_service
@@ -1034,7 +990,9 @@ begin
 end;
 ```
 
-### 场景 10：验证 LLM 服务是否正常
+> **SDK 位置**：`src\llm_client_v3.pas`（本仓库）。详见 [`llm_client_v3.md`](llm_client_v3.md)。
+
+### 场景 9：验证 LLM 服务是否正常
 
 启动 `llm_service.exe` 后，在另一个窗口执行：
 
@@ -1043,6 +1001,29 @@ end;
 ```
 
 进入交互式命令行，输入问题测试，`/quit` 退出。
+
+### 场景 10：自定义聊天模板
+
+**Windows（PowerShell）**：
+
+```powershell
+.\llm_service.exe `
+  --chat-template .\chat_template.jinja `
+  --reasoning-budget-message "好的，我用简体中文来思考。"
+```
+
+**Linux（Shell）**：
+
+```bash
+./llm_service \
+  --chat-template ./chat_template.jinja \
+  --reasoning-budget-message "好的，我用简体中文来思考。"
+```
+
+**要点**：
+
+- 模板文件必须**显式提供**，不再自动搜索。
+- `--reasoning-budget-message` 只在模板中引用了 `reasoning_budget_message` 变量时才生效。
 
 ---
 
@@ -1102,7 +1083,7 @@ flowchart LR
 Get-ChildItem *.gguf
 
 # 或用绝对路径启动
-.\llm_service.exe --model-path D:\models\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
+.\llm_service.exe --model-path D:\models\NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf
 ```
 
 **Linux（Shell）**：
@@ -1112,7 +1093,7 @@ Get-ChildItem *.gguf
 ls -lh *.gguf
 
 # 或用绝对路径启动
-./llm_service --model-path /data/models/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
+./llm_service --model-path /data/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf
 ```
 
 ### Q2：启动报 `Failed to load LingoFuse64.dll`
@@ -1238,7 +1219,7 @@ export LD_LIBRARY_PATH=/opt/LingoFuse/Binary:$LD_LIBRARY_PATH
 
 若客户端实际在线但会话仍被回收，可能是 `check_app` 缓存延迟（约 3 秒）导致误判。可调大 `--session-timeout` 缓解。
 
-### Q10：llm_service 启动后立刻退出
+### Q10：`llm_service` 启动后立刻退出
 
 **排查**：
 
@@ -1252,16 +1233,15 @@ export LD_LIBRARY_PATH=/opt/LingoFuse/Binary:$LD_LIBRARY_PATH
 
 - 确认 `--chat-template` 路径非空且文件确实存在（缺文件会报错退出）。
 - 确认**没有**依赖自动搜索功能（已移除）。
-- 启动横幅的 `Chat template` 字段应显示你的模板路径；若显示 `(model built-in)`，说明模板未被加载。
+- 启动横幅的 `Chat template` 字段应显示你的模板路径；若显示 `(none - create_chat_completion fallback)`，说明模板未被加载。
 
-### Q12：多模型配置未生效
+### Q12：`--reasoning-budget-message` 未生效
 
 **排查**：
 
-- 确认 `--models-config` 指向的 JSON 文件路径正确。
-- 确认 JSON 格式合法（可用 `python -m json.tool models.json` 验证）。
-- 观察启动横幅是否列出所有模型；若只列出一个，说明配置未生效。
-- 若某个模型加载失败（文件缺失、显存不足），服务端可能跳过该模型——在启动日志中查找警告。
+- 该参数**只在提供了自定义 `--chat-template` 且模板中引用了 `reasoning_budget_message` 变量时才生效**。
+- 使用模型内置模板时，该参数会被忽略。
+- 默认值是**空字符串**——不传该参数时，模板中 `reasoning_budget_message` 变量为空。
 
 ### Q13：多模态图片问答怎么办？
 
@@ -1269,8 +1249,20 @@ export LD_LIBRARY_PATH=/opt/LingoFuse/Binary:$LD_LIBRARY_PATH
 
 **替代方案**：
 
-- 用 `llm_proxy` / `llm_proxy_tool` 转发到支持多模态的后端（如 LM Studio 加载 VLM）。
+- 用 `llm_proxy` 或 `llm_proxy_tool`（LTB）转发到支持多模态的后端（如 LM Studio 加载 VLM）。
+- LTB 额外支持**服务端工具执行**——如果你需要"看图 + 调工具"的组合能力，用 LTB。
 - 参见 [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)。
+
+### Q14：客户端把图片发给 `llm_service` 会怎样？
+
+**行为**：`llm_service` **明确拒绝**携带**图片附件**的请求，返回 `code: -1`，错误信息提示"Image attachments are not supported by llm_service in this revision..."。
+
+**原因**：能力矩阵 `vision=0`，且服务端在 `_handle_generate` 中主动检查并拒绝。
+
+**客户端应该如何**：
+
+- 若客户端连接的是 `llm_service`，不要发送图片附件。
+- 若需要图片功能，切换到 `llm_proxy` / `llm_proxy_tool`。
 
 ---
 
@@ -1281,8 +1273,7 @@ llm_service.exe [OPTIONS]        # Windows
 ./llm_service [OPTIONS]          # Linux
 
 模型与推理
-  --model-path PATH           GGUF 模型路径 (默认: ./NVIDIA-Nemotron-...gguf)
-  --models-config PATH        多模型配置文件 (JSON)
+  --model-path PATH           GGUF 模型路径 (默认: ./NVIDIA-Nemotron-3.5-Lightning-...gguf)
   --context-size N            上下文窗口 token 数 (默认: 0=使用模型最大)
   --max-tokens N              单次最大生成 token 数 (默认: 4096)
   --threads N                 CPU 线程数 (默认: 6)
@@ -1299,10 +1290,12 @@ LingoFuse 服务
   --session-timeout SEC       会话空闲超时秒 (默认: 600)
   --queue-max-size N          最大排队任务数 (默认: 256)
   --max-sessions N            最大并发会话数 (默认: 1024)
+  --max-history N             每会话最大消息数 (默认: 512)
 
-聊天模板与推理
+聊天模板与思考
   --chat-template PATH        自定义 Jinja2 聊天模板 (默认: 空, 使用模型内置)
-  --reasoning-budget-message  思考段引导文本 (仅在自定义模板中生效)
+  --reasoning-budget-message  思考段引导文本 (默认: 空; 仅在自定义模板中生效)
+  --thinking / --no-thinking  显式启用/禁用 thinking (默认: False)
 
 日志与调试
   --log-level {0,1,2}         日志级别 (默认: 1)
@@ -1312,6 +1305,7 @@ LingoFuse 服务
 环境变量与参数一一对应 (前缀 LLM_* 和 LINGOFUSE_*)
 
 ⚠️ 多模态（图片问答）不支持。请用 llm_proxy / llm_proxy_tool 转发到支持多模态的后端。
+⚠️ 没有 --mmproj 参数；没有多模型配置功能。
 ```
 
 ---
@@ -1320,22 +1314,25 @@ LingoFuse 服务
 
 | 文档 | 说明 |
 |------|------|
-| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心组件 + 两条路径） |
-| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册 |
-| [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册 |
-| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 129+ OpenAI 兼容后端清单 |
+| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心应用组件 + 两条路径） |
+| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册（多模态转发） |
+| [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册（多模态转发 + 工具） |
+| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 250+ OpenAI 兼容后端清单 |
 | [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法 |
 | [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
+| [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档 |
 
 ### 根目录相关文档
 
 | 文档 | 说明 |
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
-| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
+| [`../Build_Guide.md`](../Build_Guide.md) | 编译指南 |
+| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署（能力边界已修正） |
 
 ---
 
-**文档版本**：v3.0（v3 架构重写版——`llm_service` 定位为辅助验证工具，新增多模型章节，明确不支持多模态）  
-**维护者**：LingoFuse-pasAgent 团队  
+**文档版本**：v3.1（v3 架构重写版 · 能力边界修正版——**删除虚构的"多模型配置"功能**、修正 `--reasoning-budget-message` 默认值、更新启动横幅示例与源码字段对齐、补充 thinking 优先级说明、明确"没有 `--mmproj` 参数"）
+
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
