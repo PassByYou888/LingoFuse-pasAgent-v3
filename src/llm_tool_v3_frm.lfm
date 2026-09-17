@@ -253,7 +253,7 @@ object llm_tool_v3_form: Tllm_tool_v3_form
           Align = alClient
           BorderStyle = bsNone
           Lines.Strings = (
-            '如果有代码就解释一下代码,如果是图片就解释一下图片'
+            '检测一切可检测的东西,返回给我json,标签用中文,思考和回复也使用中文'
           )
           ScrollBars = ssAutoBoth
           TabOrder = 0
@@ -285,6 +285,124 @@ object llm_tool_v3_form: Tllm_tool_v3_form
         Width = 872
         Align = alClient
         BorderStyle = bsNone
+        ScrollBars = ssAutoBoth
+        TabOrder = 4
+        WordWrap = False
+      end
+    end
+    object StructuredOutput_TabSheet: TTabSheet
+      Caption = '结构化输出'
+      ClientHeight = 442
+      ClientWidth = 872
+      object StructuredHintLabel: TLabel
+        Left = 8
+        Height = 17
+        Top = 8
+        Width = 976
+        Caption = '启用后强制模型返回 JSON。需要 llm_proxy / llm_proxy_tool，且后端支持 Structured Outputs（如 LM Studio + Qwen2.5-VL / Nemotron Omni）。llm_service 不支持此功能。'
+        WordWrap = True
+      end
+      object EnableStructuredOutputCheckBox: TCheckBox
+        Left = 8
+        Height = 21
+        Top = 48
+        Width = 150
+        Caption = '启用 Structured Output'
+        Checked = True
+        State = cbChecked
+        TabOrder = 0
+      end
+      object SchemaNameEdit: TLabeledEdit
+        Left = 8
+        Height = 25
+        Top = 88
+        Width = 240
+        EditLabel.Height = 17
+        EditLabel.Width = 240
+        EditLabel.Caption = 'Schema 名称（模型看到的名字，英文标识符）'
+        TabOrder = 1
+        Text = 'object_detection'
+      end
+      object StrictCheckBox: TCheckBox
+        Left = 264
+        Height = 21
+        Top = 92
+        Width = 98
+        Caption = 'strict 严格模式'
+        Checked = True
+        State = cbChecked
+        TabOrder = 2
+      end
+      object LoadDetectorTemplateButton: TButton
+        Left = 416
+        Height = 27
+        Top = 88
+        Width = 160
+        Caption = '加载检测器模板'
+        TabOrder = 3
+        OnClick = LoadDetectorTemplateButtonClick
+      end
+      object SchemaBodyLabel: TLabel
+        Left = 8
+        Height = 17
+        Top = 128
+        Width = 407
+        Caption = 'Schema 本体（JSON Schema 对象字符串，不含外层 json_schema 包装）'
+      end
+      object SchemaMemo: TMemo
+        Left = 8
+        Height = 306
+        Top = 152
+        Width = 856
+        Anchors = [akTop, akLeft, akRight, akBottom]
+        Lines.Strings = (
+          '{'
+          '  "type": "object",'
+          '  "properties": {'
+          '    "detections": {'
+          '      "type": "array",'
+          '      "description": "检测到的目标列表，最多 100 个。",'
+          '      "maxItems": 100,'
+          '      "items": {'
+          '        "type": "object",'
+          '        "properties": {'
+          '          "label": {'
+          '            "type": "string",'
+          '            "description": "目标类别名称，例如 person / car / dog。"'
+          '          },'
+          '          "bbox": {'
+          '            "type": "array",'
+          '            "description": "归一化边界框 [x_min, y_min, x_max, y_max]，取值 0~1，(x_min,y_min) 为左上角。",'
+          '            "items": {'
+          '              "type": "number",'
+          '              "minimum": 0,'
+          '              "maximum": 1'
+          '            },'
+          '            "minItems": 4,'
+          '            "maxItems": 4'
+          '          },'
+          '          "confidence": {'
+          '            "type": "number",'
+          '            "description": "检测置信度，0.0 ~ 1.0。",'
+          '            "minimum": 0,'
+          '            "maximum": 1'
+          '          }'
+          '        },'
+          '        "required": ["label", "bbox", "confidence"],'
+          '        "additionalProperties": false'
+          '      }'
+          '    },'
+          '    "total": {'
+          '      "type": "integer",'
+          '      "description": "检测到的目标总数，等于 detections 数组长度。",'
+          '      "minimum": 0,'
+          '      "maximum": 100'
+          '    }'
+          '  },'
+          '  "required": ["detections", "total"],'
+          '  "additionalProperties": false'
+          '}'
+        )
         ScrollBars = ssAutoBoth
         TabOrder = 4
         WordWrap = False
