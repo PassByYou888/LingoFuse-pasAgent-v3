@@ -61,6 +61,27 @@ multi-modal content parts, but ONLY on the first round. Subsequent
 rounds see a short placeholder in history, so long tool chains do not
 accumulate megabytes of base64.
 
+Structured Output handling
+--------------------------
+options.response_format is whitelisted as a passthrough field, exactly
+as in llm_proxy.py. The value is forwarded verbatim to the backend on
+EVERY round of the tool chain. This gives the operator two options:
+
+  * With tool execution enabled (default): the model is constrained to
+    emit a schema-conforming reply on every round, including rounds
+    where it would otherwise try to call a tool. Most tool-capable
+    models will still emit tool_calls when the schema does not apply,
+    but behaviour depends on the backend. If you see the model
+    refusing to call tools while response_format is active, run the
+    request with --no-tools, or use a schema that does not conflict
+    with the tool-call intent.
+
+  * With --no-tools: LTB behaves as a pure passthrough proxy for
+    Structured Output, identical to llm_proxy.py.
+
+The proxy does not currently clear response_format on the forced final
+round; a future revision may inject a per-round override.
+
 All comments and log messages are in English.
 """
 
@@ -540,9 +561,17 @@ class LLMProxyToolService:
             content         (str, optional if attachments are present)
             prompt          (str, optional)
             client_name     (str, required for new sessions)
-            options         (object, optional; tools / tool_choice
-                             are passed through to the backend)
+            options         (object, optional; tools / tool_choice /
+                             response_format are passed through to the
+                             backend)
             attachments     (array, optional)
+
+        Structured Output:
+            options.response_format is whitelisted as a passthrough
+            field (see the sanitize_options call below) and forwarded
+            verbatim to the backend on EVERY round of the tool chain.
+            See the module docstring for the interaction with tool
+            execution.
 
         Returns:
             {code, session_id, task_id, mode, expects_tool_results}
@@ -587,18 +616,27 @@ class LLMProxyToolService:
                 ),
             }
 
-        # ---- Filter options (tools / tool_choice are passthrough) ----
+        # ---- Filter options (tools / tool_choice / response_format) ----
         #
         # COMMON_SCALAR_SPECS is passed explicitly so that the
         # whitelist is visible at the call site and not hidden behind
         # a default argument. If a future change tightens or loosens
         # the scalar rules, this is where the reader will look.
+        #
+        # Passthrough keys:
+        #   - "tools":           list of OpenAI tool definitions.
+        #   - "tool_choice":     str or dict controlling tool selection.
+        #   - "response_format": Structured Output control. Only a
+        #                        top-level dict type check is applied;
+        #                        schema-level validation belongs to the
+        #                        backend. Forwarded on every round.
         options = sanitize_options(
             options_raw,
             scalar_specs=COMMON_SCALAR_SPECS,
             passthrough={
-                "tools":       lambda v: isinstance(v, list),
-                "tool_choice": lambda v: isinstance(v, (str, dict)),
+                "tools":           lambda v: isinstance(v, list),
+                "tool_choice":     lambda v: isinstance(v, (str, dict)),
+                "response_format": lambda v: isinstance(v, dict),
             },
             debug_log=(
                 logger.debug
@@ -681,8 +719,10 @@ class LLMProxyToolService:
             return {"code": -1, "error": f"Failed to start task: {e}"}
 
         logger.debug(
-            "generate queued: mode=%s session=%s task=%s attachments=%d",
+            "generate queued: mode=%s session=%s task=%s attachments=%d "
+            "response_format=%s",
             mode, sess.session_id, task_id, len(attachments),
+            "yes" if "response_format" in options else "no",
         )
         return {
             "code": 0,
@@ -897,6 +937,13 @@ class LLMProxyToolService:
         image attachments as short placeholders. This keeps long tool
         chains from accumulating megabytes of base64.
 
+        Structured Output handling
+        --------------------------
+        options.response_format, when present, is passed to stream_chat
+        on EVERY round. The proxy does not currently strip it on the
+        forced final round. See the module docstring for the trade-offs
+        of using response_format together with tool execution.
+
         Session occupancy
         -----------------
         `sess.running` and `sess.cancel_event` are set by the caller
@@ -959,6 +1006,8 @@ class LLMProxyToolService:
         total_tool_result_chars = 0
         force_final_round = False
 
+        response_format_active = "response_format" in options
+
         try:
             for round_idx in range(CONFIG.max_tool_rounds):
                 if cancel_event.is_set():
@@ -1005,10 +1054,11 @@ class LLMProxyToolService:
                     round_options.pop("tool_choice", None)
 
                 logger.debug(
-                    "Task %s round %d/%d: msgs=%d tools=%s",
+                    "Task %s round %d/%d: msgs=%d tools=%s rf=%s",
                     task_id, round_idx, CONFIG.max_tool_rounds,
                     len(messages),
                     "yes" if round_options.get("tools") else "no",
+                    "yes" if response_format_active else "no",
                 )
 
                 # ---- Stream from the backend ----
@@ -1470,6 +1520,8 @@ def print_service_banner() -> None:
                  "enabled (text always, image when --vision)"),
                 ("Vision",
                  "enabled" if CONFIG.vision else "disabled"),
+                ("Structured Output",
+                 "enabled (options.response_format forwarded per round)"),
                 ("Log level", CONFIG.log_level),
             ],
             [
@@ -1569,6 +1621,20 @@ def parse_args():
         "  the first round of a tool chain; later rounds see a short\n"
         "  placeholder in history.\n"
         "\n"
+        "Structured Output:\n"
+        "  A generate request may carry options.response_format, an\n"
+        "  OpenAI Structured Outputs object such as\n"
+        "      {\"type\": \"json_schema\",\n"
+        "       \"json_schema\": {\"name\": \"...\", \"strict\": true,\n"
+        "                       \"schema\": {...}}}\n"
+        "  or the simpler {\"type\": \"json_object\"}. LTB forwards\n"
+        "  this field verbatim to the backend on EVERY round of a\n"
+        "  tool chain. Some backends will prefer tool_calls over the\n"
+        "  schema when both are present; if you see the model\n"
+        "  refusing to call tools, run with --no-tools (pure\n"
+        "  passthrough), or use a schema that does not conflict with\n"
+        "  the tool-call intent.\n"
+        "\n"
         "Environment variables (read once at startup):\n"
         "  LLM_PROXY_ENDPOINT              - endpoint\n"
         "  LLM_PROXY_APP_NAME              - app name\n"
@@ -1613,6 +1679,11 @@ def parse_args():
             "The client sends a normal `generate` request and receives a\n"
             "normal chunk / think / finish stream. All tool-call\n"
             "plumbing happens server-side; zero client changes required.\n"
+            "\n"
+            "Structured Output is supported as a passthrough field:\n"
+            "options.response_format is forwarded verbatim to the\n"
+            "backend on every round of the tool chain. See the epilog\n"
+            "for the interaction with tool execution.\n"
         ),
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
