@@ -21,6 +21,14 @@ New in this revision
   and image attachments. Text attachments are merged into the user
   message; image attachments are forwarded as OpenAI multi-modal
   content parts, provided --vision is enabled.
+* Structured Output support: a `generate` request may carry
+  options.response_format (an OpenAI Structured Outputs object such as
+  {"type": "json_schema", "json_schema": {...}} or the simpler
+  {"type": "json_object"}). llm_proxy does not interpret this field; it
+  is whitelisted as a passthrough option and forwarded verbatim to the
+  backend. The backend is responsible for enforcing the schema. This is
+  what allows a vision client to receive a detector-style bounding-box
+  JSON document from a multimodal model instead of free-form prose.
 
 Backend transport
 -----------------
@@ -49,6 +57,19 @@ Attachment policy
 * If the client sends an image but --vision is disabled, the whole
   request is rejected with a clear error. Silent dropping would give
   the user a false impression that the model saw the image.
+
+Structured Output policy
+------------------------
+* options.response_format is whitelisted as a passthrough field. The
+  proxy does not validate its contents beyond a top-level dict type
+  check (see _handle_generate).
+* The field is forwarded as-is to the backend on every streaming call.
+  Backends that do not implement Structured Outputs typically ignore
+  the field; backends that do (LM Studio, Ollama, vLLM, ...) enforce
+  it.
+* The proxy does not currently mutate or strip response_format on
+  later turns of a multi-turn conversation. For a single-shot
+  detection request this is exactly the desired behaviour.
 
 All comments and log messages are in English.
 """
@@ -358,6 +379,13 @@ class LLMProxyService:
             options         (object, optional)
             attachments     (array, optional)
 
+        Structured Output:
+            options.response_format may be supplied by the client. It is
+            whitelisted as a passthrough field (see the sanitize_options
+            call below) and forwarded verbatim to the backend. The
+            proxy does not inspect its contents beyond a top-level
+            dict type check.
+
         Returns:
             {code, session_id, task_id, mode}
         """
@@ -402,8 +430,27 @@ class LLMProxyService:
             }
 
         # ---- Filter options ----
+        #
+        # scalar_specs defaults to COMMON_SCALAR_SPECS. We add a
+        # single passthrough key here:
+        #
+        #   - "response_format": Structured Output control.
+        #     We only require it to be a JSON object at the top level.
+        #     Anything more specific (json_schema vs json_object,
+        #     schema contents, strict flag) is the backend's job to
+        #     validate. This keeps the proxy agnostic to the schema
+        #     language version and to the specific backend's support
+        #     matrix.
+        #
+        # Note: scalar_specs is intentionally left at its default so
+        # that this file remains visually aligned with llm_proxy_tool.py,
+        # which passes COMMON_SCALAR_SPECS explicitly. Both files end
+        # up with the same whitelist.
         options = sanitize_options(
             options_raw,
+            passthrough={
+                "response_format": lambda v: isinstance(v, dict),
+            },
             debug_log=(
                 logger.debug
                 if logger.isEnabledFor(logging.DEBUG)
@@ -477,8 +524,10 @@ class LLMProxyService:
             return {"code": -1, "error": f"Failed to start task: {e}"}
 
         logger.info(
-            "generate queued: mode=%s session=%s task=%s attachments=%d",
+            "generate queued: mode=%s session=%s task=%s attachments=%d "
+            "response_format=%s",
             mode, sess.session_id, task_id, len(attachments),
+            "yes" if "response_format" in options else "no",
         )
         return {
             "code": 0,
@@ -660,6 +709,15 @@ class LLMProxyService:
           placeholder. This keeps multi-turn history from growing
           without bound when images are involved.
 
+        Structured Output handling
+        --------------------------
+        * `options` may contain a "response_format" entry, already
+          whitelisted by _handle_generate. It is passed straight to
+          stream_chat, which forwards it verbatim to the backend.
+        * The proxy does not modify or clear this field between turns
+          of the same session; multi-turn Structured Output is the
+          caller's responsibility.
+
         Session occupancy
         -----------------
         `sess.running` and `sess.cancel_event` are set by the caller
@@ -786,11 +844,12 @@ class LLMProxyService:
 
             logger.info(
                 "Task %s finished: session=%s chars=%d think_chars=%d "
-                "attachments=%d cancelled=%s error=%s",
+                "attachments=%d response_format=%s cancelled=%s error=%s",
                 task_id, sess.session_id,
                 len("".join(answer_pieces)),
                 len("".join(think_pieces)),
                 len(attachments),
+                "yes" if "response_format" in options else "no",
                 cancel_event.is_set(),
                 error_message is not None,
             )
@@ -1001,6 +1060,8 @@ def print_service_banner() -> None:
                  "enabled (text always, image when --vision)"),
                 ("Vision",
                  "enabled" if CONFIG.vision else "disabled"),
+                ("Structured Output",
+                 "enabled (options.response_format forwarded)"),
                 ("Log level", CONFIG.log_level),
             ],
             [
@@ -1086,6 +1147,16 @@ def parse_args():
         "  VLM loaded). When --vision is disabled, a request with an\n"
         "  image attachment is rejected with a clear error.\n"
         "\n"
+        "Structured Output:\n"
+        "  A generate request may carry options.response_format, an\n"
+        "  OpenAI Structured Outputs object such as\n"
+        "      {\"type\": \"json_schema\",\n"
+        "       \"json_schema\": {\"name\": \"...\", \"strict\": true,\n"
+        "                       \"schema\": {...}}}\n"
+        "  or the simpler {\"type\": \"json_object\"}. llm_proxy does\n"
+        "  not interpret the field; it forwards it verbatim to the\n"
+        "  backend and lets the backend enforce the schema.\n"
+        "\n"
         "Capability matrix (as returned by get_api_capabilities):\n"
         "  Common keys: generate, create_session, close_session,\n"
         "               cancel_session, list_sessions, health,\n"
@@ -1129,6 +1200,10 @@ def parse_args():
             "set_system_message is NOT supported by this proxy. To use\n"
             "a different system message, close the current session\n"
             "and create a new one with the desired system_message.\n"
+            "\n"
+            "Structured Output is supported as a passthrough field:\n"
+            "options.response_format is forwarded verbatim to the\n"
+            "backend. See the epilog for the accepted shapes.\n"
         ),
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
