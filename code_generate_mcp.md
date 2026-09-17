@@ -1,17 +1,16 @@
 # code_decl_to_mcp 使用手册
 
-**版本**：V5.0  
-**最后更新**：2026-09-15  
-**适用工具**：`code_decl_to_mcp.exe`（LingoFuse-pasAgent 工具链）  
+**版本**：V5.1
+**最后更新**：2026-09-17
+**适用工具**：`code_decl_to_mcp.exe`（LingoFuse-pasAgent 工具链）
 
-**本次更新（V5.0）** 重大更新内容：
+**本次更新（V5.1）** 修正内容：
 
-- 🎉 **新增 Python 目标代码生成，已实测通过** —— 一个 Pascal/C 声明，现在可以一键生成 **Pascal 工具提供者** 和 **Python 工具提供者** 两种形态。
-- ✅ **修正 Python 生成器的两处历史缺陷**：UnboundLocalError（v1.1）与非 ASCII 字符截断（v1.0），生成代码可直接运行。
-- 🚀 **新增「几十种语言的未来蓝图」章节** —— 展示从双语言到多语言的演进路线。
-- 📊 **补充双目标生成的对比结构** —— Pascal 版本与 Python 版本的逐层差异对照。
-- 🔄 **同步最新 GUI 源码**：确认「Final source」Tab 中 `pas_TabSheet` / `Py_TabSheet` 双页并存。
-- 📌 相关文档链接路径修正为「同目录 / `src/` 子目录」两种。
+- **修正源码归属说明**：明确 **GUI 源码在本仓库 `src\tools\pascal_c_to_mcp\`**；仅依赖的 Z 框架单元（`Z.Pascal_Func_Tool.pas`、`pascal_func_model.pas`）属于 **LingoFuse 核心仓库**。
+- 第 0 节一图总览更新：Python 输出从"未来"提升为"已实现"。
+- 第 14 节引用文档：`129+` → `250+`。
+- 第 10 章补充 `tools\pascal_c_to_mcp\` 是**独立可编译子系统**的说明。
+- 补充"tools 目录内旧版副本与本手册的同步关系"。
 
 ---
 
@@ -23,7 +22,7 @@ flowchart LR
     B["📄 C 头文件"] --> M
     M --> G["⚙️ 多目标代码生成器"]
     G --> O1["🎯 工具提供者单元.pas"]
-    G --> O2["🐍 工具提供者模块.py<br/>（NEW · 已测试通过）"]
+    G --> O2["🐍 工具提供者模块.py<br/>（已实现）"]
     G -.->|"未来"| O3["🌌 JS/TS · Rust · Go · Java · ..."]
 
     style A fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
@@ -37,7 +36,44 @@ flowchart LR
 
 **一句话**：**把 Pascal/C 的函数声明，自动变成 AI 可调用的 MCP 工具**——**同时输出 Pascal 和 Python 两种工具提供者**。
 
-> **⚠️ 工具源码归属**：本仓库（`LingoFuse-pasAgent`）**只提供** `code_decl_to_mcp` 的**使用手册**（本文档）和**声明规范**（`pascal_code_mcp_rule.md`、`C_code_mcp_rule.md`），**不包含**该工具的 Pascal 源码（`Z.Pascal_Func_Tool.pas`、`pascal_func_model.pas`、`pas_mcp_generator_tool.pas`、`py_mcp_generator_tool.pas`）。这些源码属于 **LingoFuse 核心仓库**（[github.com/PassByYou888/LingoFuse](https://github.com/PassByYou888/LingoFuse)）。若需使用该工具，请从预编译发布页获取 `code_decl_to_mcp.exe`。
+### ⚠️ 工具源码归属（**重要修正**）
+
+`code_decl_to_mcp` 的源码分为**两部分**，归属**不同**：
+
+| 部分 | 归属 | 文件 |
+|------|------|------|
+| **GUI 应用 + 生成器实现** | ✅ **本仓库** | `src\tools\pascal_c_to_mcp\` 下的全部文件（见下方清单） |
+| **依赖的 Z 框架单元** | 📦 **LingoFuse 核心仓库** | `Z.Pascal_Func_Tool.pas`、`pascal_func_model.pas` 等 |
+
+**本仓库 `src\tools\pascal_c_to_mcp\` 包含**：
+
+```
+src\tools\pascal_c_to_mcp\
+├── code_decl_to_mcp.lpi / .lpr / .res     # Lazarus 项目（GUI 主程序）
+├── code_decl_to_mcp_frm.pas / .lfm        # GUI 主窗体
+├── code_decl_to_mcp.ico                   # 图标
+├── pas_mcp_generator_tool.pas             # Pascal 输出生成器
+├── py_mcp_generator_tool.pas              # Python 输出生成器（v5.0 新增）
+├── code_generate_mcp.md                   # 本手册（旧副本，见下方同步说明）
+├── pascal_code_mcp_rule.md / .html        # Pascal 声明规范
+└── C_code_mcp_rule.md / .html             # C 声明规范
+```
+
+**依赖的 LingoFuse 核心仓库单元**（编译时需在搜索路径中）：
+
+- `Z.Pascal_Func_Tool.pas`
+- `pascal_func_model.pas`
+- Z 框架相关单元（`Z.Core.pas`、`Z.Json.pas` 等）
+
+> 📖 编译步骤见 [`Build_Guide.md`](Build_Guide.md) 第五章。
+>
+> 📖 如果你不想自己编译，可直接从预编译包（`releases/tag/pre_build`）取用 `code_decl_to_mcp.exe`。
+
+### 📌 关于 `tools\pascal_c_to_mcp\code_generate_mcp.md`（旧副本）
+
+`src\tools\pascal_c_to_mcp\` 目录下**也有一份** `code_generate_mcp.md`，这是**旧版 V4.0 副本**（主要差异：V4.0 只讲 Pascal 输出，V5.x 已加入 Python 双语言输出）。
+
+**权威版本以本手册（根目录）为准**。tools 目录下的旧副本仅作为**开发期间的本地参考**保留，请勿作为最新说明使用。
 
 ---
 
@@ -83,7 +119,7 @@ flowchart TB
     Model --> GenPy["🐍 GeneratePythonCode()"]
 
     GenPas --> PasOut["📦 xxx_tool_provider_unit.pas<br/>（已实测可用）"]
-    GenPy --> PyOut["📦 xxx_tool_provider.py<br/>（NEW · 已测试通过）"]
+    GenPy --> PyOut["📦 xxx_tool_provider.py<br/>（已实测通过）"]
 
     style Decl fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
     style Parse fill:#B7791F,stroke:#7E5109,stroke-width:4px,color:#FFFFFF
@@ -113,7 +149,7 @@ flowchart LR
     style O2 fill:#D5F5E3,stroke:#1E8449,stroke-width:4px,color:#0E4D2A
 ```
 
-**GUI 内部的调用链**（来自 `code_decl_to_mcp_frm.pas` 的 `Button6Click`）：
+**GUI 内部的调用链**（来自本仓库 `src\tools\pascal_c_to_mcp\code_decl_to_mcp_frm.pas` 的 `Button6Click`）：
 
 ```pascal
 // 1) 从 LV1 模型加载
@@ -137,7 +173,7 @@ begin
 end;
 ```
 
-> ⭐ **两份产物同源**——都从同一份 `TPascal_Func_Model` 生成，**内容语义完全一致**，只是目标语言不同。  
+> ⭐ **两份产物同源**——都从同一份 `TPascal_Func_Model` 生成，**内容语义完全一致**，只是目标语言不同。
 > ⭐ **两份产物可用**——Pascal 版本经过长期使用验证，Python 版本经过测试通过（见 2.4 节）。
 
 ### 2.3 两份产物结构对照
@@ -189,7 +225,7 @@ flowchart LR
 
 ### 2.4 Python 目标：实测通过 ✅
 
-**Python 生成器已经过两轮修复**，从"能生成"到"能跑"，已完成实测验证：
+**Python 生成器已经过两轮修复**（都在 **`src\tools\pascal_c_to_mcp\py_mcp_generator_tool.pas`** 中完成），从"能生成"到"能跑"，已完成实测验证：
 
 #### ✅ 修复 1（v1.1）：`RegisterTools` 的 `UnboundLocalError`
 
@@ -226,11 +262,11 @@ tool_def = {
 
 ### 2.5 Python 生成器内部结构剖析
 
-以 `py_mcp_generator_tool.pas` 的最新实现为例，Python 生成器的 10 个模块：
+以 **`src\tools\pascal_c_to_mcp\py_mcp_generator_tool.pas`** 的最新实现为例，Python 生成器的 10 个模块：
 
 ```mermaid
 mindmap
-  root(("py_mcp_generator_tool"))
+  root(("py_mcp_generator_tool.pas<br/>输出：xxx_tool_provider.py"))
     Header
       docstring
       imports
@@ -835,7 +871,7 @@ flowchart TB
 
 ---
 
-## 8. 生成代码结构（Python 版 · NEW）
+## 8. 生成代码结构（Python 版）
 
 ### 8.1 模块骨架
 
@@ -983,7 +1019,7 @@ mindmap
 ```mermaid
 timeline
     title code_decl_to_mcp 多语言演进路线
-    section ✅ 已实现 v3.0 ~ V5.0
+    section ✅ 已实现 v3.0 ~ V5.x
         Pascal 输入 : Fill_Pascal
         C 输入 : Fill_C + Translate_C_Typ_To_Pascal
         Pascal 输出 : pas_mcp_generator_tool
@@ -1099,7 +1135,6 @@ flowchart LR
         D1["Zig / Nim / Crystal"]
         D2["WebAssembly"]
         D3["… 更多"]
-
     end
 
     style Group1 fill:#D5F5E3,stroke:#1E8449,stroke-width:4px,color:#0E4D2A
@@ -1110,9 +1145,9 @@ flowchart LR
 
 ### 9.6 对开发者的意义
 
-> **今天你用 `code_decl_to_mcp` 生成 Pascal + Python。**  
-> **明天它能生成 JS/TS + Rust + Go。**  
-> **后天它覆盖几十种语言。**  
+> **今天你用 `code_decl_to_mcp` 生成 Pascal + Python。**
+> **明天它能生成 JS/TS + Rust + Go。**
+> **后天它覆盖几十种语言。**
 > **而你，只需要维护一份 Pascal/C 声明。**
 
 ```mermaid
@@ -1135,6 +1170,8 @@ flowchart LR
 
 ## 10. 编译与部署
 
+> 📌 **`src\tools\pascal_c_to_mcp\` 是一个独立可编译子系统**。它的构建**不参与**主工具链的 `build_*.ps1` 脚本——你需要单独用 `lazbuild` 编译。详见 [`Build_Guide.md`](Build_Guide.md) 第五章。
+
 ### 10.1 Pascal 工具提供者：4 步部署
 
 ```mermaid
@@ -1152,7 +1189,10 @@ flowchart LR
 **详解**：
 
 1. **生成单元**：在 `code_decl_to_mcp.exe` 中粘贴声明，走完 5 个 Tab，最后在「Final source → `pas_TabSheet`」中复制生成的 `.pas` 单元。
-2. **编译生成的单元**：将 `.pas` 文件放入 Lazarus 项目，用 `lazbuild` 编译。详见 `Build_Guide.md`。
+   - **获取 `code_decl_to_mcp.exe`** 有两种方式：
+     - **自己编译**：`lazbuild src\tools\pascal_c_to_mcp\code_decl_to_mcp.lpi`（见 [`Build_Guide.md`](Build_Guide.md) 第五章）
+     - **取预编译包**：从 `releases/tag/pre_build` 中直接取用
+2. **编译生成的单元**：将 `.pas` 文件放入 Lazarus 项目，用 `lazbuild` 编译。详见 [`Build_Guide.md`](Build_Guide.md)。
 3. **复制 DLL**：`LingoFuse64.dll` / `z_ipc_64.dll` 需要与生成的 EXE 同目录或位于 PATH。
 4. **启动信标 + 工具提供者**：
    - 先启动 `pascal_agent_service.exe`（信标）。
@@ -1179,6 +1219,11 @@ flowchart LR
    python myunit_tool_provider.py
    ```
    **无需编译，无需 Lazarus，无需 FPC**。
+
+**前置依赖**：
+
+- `lingofuse` Python 包（本仓库 `src\lingofuse\`）必须在 `PYTHONPATH` 中，或把生成的 `.py` 放在 `src\` 目录下运行。
+- Python 3.8+。
 
 > ⭐ **Python 版本的最大优势**：**零编译、跨平台、开箱即用**。
 
@@ -1294,12 +1339,12 @@ flowchart TB
 
 ### 11.4 为什么 Python 生成代码报 `UnboundLocalError`？
 
-> ❌ **这是 v1.0 的历史问题**——已在 v1.1 修复。  
+> ❌ **这是 v1.0 的历史问题**——已在 **v1.1**（**2026-09-14** 发布）修复。
 > ✅ **请使用最新版 `code_decl_to_mcp.exe`**，`RegisterTools` 中的 `total_count` / `reg_count` 已在函数顶部初始化。
 
 ### 11.5 为什么 Python 生成代码里中文变 `?`？
 
-> ❌ **这是 v0.x 的历史问题**——已在 v1.0 修复（`PyStrLit` 改用 `TP_Char` 迭代）。  
+> ❌ **这是 v0.x 的历史问题**——已在 **v1.0**（**2026-09-12** 发布）修复（`PyStrLit` 改用 `TP_Char` 迭代）。
 > ✅ **请使用最新版 `code_decl_to_mcp.exe`**，中文、Emoji 均完整保留。
 
 ### 11.6 Python 和 Pascal 两份产物，能不能只用一份？
@@ -1308,6 +1353,12 @@ flowchart TB
 > - 你的程序是 Pascal 写的 → 用 Pascal 版本
 > - 你的程序是 Python 写的 → 用 Python 版本
 > - 两者都有 → **两份都生成，语义一致，可互为对照**
+
+### 11.7 `src\tools\pascal_c_to_mcp\code_generate_mcp.md` 和根目录这份有什么区别？
+
+> `tools\` 目录里的是**旧版 V4.0 副本**（只讲 Pascal 输出）。**根目录这份是权威版本（V5.x）**，包含 Python 双语言输出等全部最新内容。
+>
+> 若两者冲突，**以根目录版本为准**。
 
 ---
 
@@ -1504,40 +1555,41 @@ flowchart TB
 |------|------|
 | `pascal_code_mcp_rule.md` | Pascal 声明规范（解析契约） |
 | `C_code_mcp_rule.md` | C 声明规范（解析契约） |
-| `Build_Guide.md` | 编译指南（Pascal 和 Python 组件） |
-| `Dependency_Installation_Guide.md` | 依赖安装 |
-| `readme.md` | 项目总览与闭环架构 |
-| `mcp_api_tool_doubao_guide.md` | 新手零基础教程 |
-| `Pascal_Integration_Guide.md` | **Pascal 语言切入指南** |
+| `Build_Guide.md` | 编译指南（Pascal 和 Python 组件，含 `tools\pascal_c_to_mcp\` 编译说明） |
+| `readme.md` | 项目总览与四大核心应用组件 |
+| `Pascal_Integration_Guide.md` | Pascal 开发者切入指南 |
+| `NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md` | 推荐模型下载与部署 |
 
 ### 子目录文档（`src/`）
 
 | 文档 | 说明 |
 |------|------|
 | `src/pascal_agent_api_ref_json.md` | `agent_main` / `register_agent` JSON 结构详解 |
-| `src/LingoFuse_LLM_Ecosystem_User_Guide.md` | 闭环架构与生态总览 |
-| `src/LingoFuse_LLM_Service_CLI_guide.md` | LLM 服务命令行手册 |
-| `src/LingoFuse_LLM_Proxy_CLI_Guide.md` | LLM 代理命令行手册 |
-| `src/LingoFuse_LLM_Proxy_Compatibility_Guide.md` | 129+ 后端兼容清单 |
-| `src/LingoFuse_LLM_Pitfalls_For_AI.md` | 踩坑大全 |
+| `src/LingoFuse_LLM_Ecosystem_User_Guide.md` | 生态总览（四大应用组件 + 两条路径） |
+| `src/LingoFuse_LLM_Service_CLI_guide.md` | `llm_service.exe` 命令行手册 |
+| `src/LingoFuse_LLM_Proxy_CLI_Guide.md` | `llm_proxy.exe` 命令行手册 |
+| `src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md` | `llm_proxy_tool.exe`（LTB）命令行手册 |
+| `src/LingoFuse_LLM_Proxy_Compatibility_Guide.md` | **250+** 后端兼容清单 |
+| `src/LingoFuse_LLM_Pitfalls_For_AI.md` | 踩坑大全（P0–P8 系列） |
 
 ---
 
 ## 15. 核心要点速记
 
-> 📌 **四句话记住本文档**：
+> 📌 **五句话记住本文档**：
 
 1. **双目标生成** —— 一份 Pascal/C 声明，**同时输出 Pascal 和 Python 两种工具提供者**。
-2. **Python 已实测通过** —— 修复了 `UnboundLocalError` 与非 ASCII 截断，**生成即可运行**。
+2. **Python 已实测通过** —— 修复了 `UnboundLocalError`（v1.1）与非 ASCII 截断（v1.0），**生成即可运行**。
 3. **5 层透明模型** —— 每层可导出、可编辑、可重新导入，**核心链路完全确定性**。
 4. **未来几十年语言** —— 可插拔架构（Modifier × Generator），复杂度从 **O(N×M) 降到 O(N+M)**。
+5. **GUI 源码在本仓库 `src\tools\pascal_c_to_mcp\`** —— 只有依赖的 Z 框架单元在 LingoFuse 核心仓库。`tools\` 目录内的 `code_generate_mcp.md` 是旧副本，以根目录这份为准。
 
 > 🎯 **记住这句话就够了**：
 >
-> **今天你用一份声明生成两种语言，明天它能生成几十种——而你只需要维护一份声明。**
+> **今天你用一份声明生成两种语言，明天它能生成几十种——而你只需要维护一份声明。源码就在本仓库 `src\tools\pascal_c_to_mcp\`，随时可以自己编译或改进。**
 
 ---
 
-**文档版本**：V5.0（Python 目标代码生成已实测通过；新增几十种语言的未来蓝图）  
-**维护者**：LingoFuse-pasAgent 团队  
+**文档版本**：V5.1（修正源码归属说明、更新一图总览、统一 `250+` 引用、补充 tools 目录同步说明）
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
