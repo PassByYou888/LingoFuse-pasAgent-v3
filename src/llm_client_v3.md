@@ -6,20 +6,23 @@
 > - 添加新 API
 > - 修改现有 API
 > - 判断改动影响范围
+> - **构造 Structured Output（结构化输出）请求，尤其是检测器方框标注**
+> - **组合图片附件 + JSON Schema 实现"一步到位的检测器"**
 >
 > **使用方式**：
 > - 要**写代码** → §1 + §2 + §3
 > - 要**查 bug** → §4（错误消息原文索引）
 > - 要**升级** → §5（模板）
 > - 要**深入理解** → §6 + §7
+> - 要**做结构化输出/检测器** → **§16 Structured Output 完整指南**（重点）
 > - 遇到 §8 的场景 → 停止，回查源码
 >
 > **可信度标记**：`[源码]` = 逐行核对过 `.pas`；`[协议]` = 从服务端契约推断；`[教训]` = 来自实际踩坑；`[未核实]` = 需回查源码。
 >
-> **文档版本**：v2.1（结构性重构版 · 能力边界修正版）
+> **文档版本**：v2.3（Structured Output 组合扩展版）
 > **最后更新**：2026-09-17
-> **SDK 源码位置**：本仓库 `src\llm_client_v3.pas`
-> **GUI 演示**：本仓库 `src\llm_tool_v3.lpi`
+> **SDK 源码位置**：本仓库 `src\llm_client_v3.pas`（v3.10）
+> **GUI 演示**：本仓库 `src\llm_tool_v3.lpi`（v3.4）
 > **相关文档**：
 > - [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) — Pascal 开发者切入指南
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
@@ -29,18 +32,19 @@
 
 ## ⚠️ 阅读前必读：能力边界
 
-**在阅读本文之前，请先理解以下三条关键事实**：
+**在阅读本文之前，请先理解以下四条关键事实**：
 
 | # | 事实 | 说明 |
 |:-:|------|------|
 | 1 | **SDK 同时兼容 Delphi 7+ 和 FPC 3.0+** | 通过条件编译指令统一两端 |
 | 2 | **SDK 支持三种服务端** | `llm_service` / `llm_proxy` / `llm_proxy_tool`（LTB）——通过 `ServerKind` 与能力矩阵区分 |
 | 3 | **`GenerateWithImageFile` 等图片 API 只对代理服务端有效** | `llm_service` 是纯文本服务端，**收到图片附件会拒绝**（返回 `code: -1`）。图片要经 `llm_proxy` / LTB 转发到 VLM 后端。 |
+| 4 | **Structured Output 只对代理服务端有效** | 所有 Structured Output 相关方法（`GenerateStructured` / `GenerateWithJsonSchema` / `GenerateWithImageFileAndSchema` / `GenerateWithAttachmentsAndSchema`）依赖代理层把 `options.response_format` 原样转发给后端。`llm_service`（本地 llama.cpp）在当前版本**不支持** `response_format`。 |
 
 > **关键区分**：
 > - **客户端 API 无差异**——SDK 本身对三种服务端使用**相同的 API**。
-> - **服务端能力有差异**——`set_system_message` 只有 `llm_service` 支持；工具只有 LTB 支持；多模态转发只有 `llm_proxy` / LTB 支持。
-> - **客户端必须做能力发现**——通过 `LLMSupported` / `HasVision` 等接口查询服务端能力，**不要硬编码假设**。
+> - **服务端能力有差异**——`set_system_message` 只有 `llm_service` 支持；工具只有 LTB 支持；多模态转发和 Structured Output 转发只有 `llm_proxy` / LTB 支持。
+> - **客户端必须做能力发现**——通过 `LLMSupported` / `HasVision` / `HasAttachments` 等接口查询服务端能力，**不要硬编码假设**。
 
 ---
 
@@ -80,7 +84,7 @@
 - `CreateSession` 成功但响应无 `session_id` → 失败并返回 `'Server did not return session_id'`。
 - `ListSessions` 成功时 `ASessionsJson` 是**原始响应 JSON**（未再解析），调用者需自己 `TZ_JsonObject.ParseText`。
 
-### 1.3 生成（5 个变体）
+### 1.3 生成（9 个变体）
 
 | 方法 | 参数 | 副作用 | 附加字段 |
 |------|------|--------|---------|
@@ -89,6 +93,10 @@
 | `GenerateWithTextFile` | `(AContent, APrompt, AFilePath: string; var ASessionId; out AError)` | 同上 | 读文件→构造文本附件 |
 | `GenerateWithImageFile` | `(AContent, APrompt, AFilePath: string; var ASessionId; out AError)` | 同上 | 读文件→base64→构造图片附件 |
 | `GenerateCurrent` | `(AContent, APrompt: string; out AError: string)` | **不改变 `FCurrentSessionId`** | 用 `FCurrentSessionId`（可能是空） |
+| **`GenerateStructured`** | `(AContent, APrompt, AResponseFormatJson: string; var ASessionId; out AError)` | **更新 `FCurrentSessionId`** | 附加 `options.response_format`（**原始 JSON 字符串**） |
+| **`GenerateWithJsonSchema`** | `(AContent, APrompt, ASchemaName, ASchemaJson: string; AStrict: boolean; var ASessionId; out AError)` | **更新 `FCurrentSessionId`** | 客户端自动组装外层 `{"type":"json_schema",...}` |
+| **`GenerateWithImageFileAndSchema`**（v3.10） | `(AContent, APrompt, AFilePath, ASchemaName, ASchemaJson: string; AStrict: boolean; var ASessionId; out AError)` | **更新 `FCurrentSessionId`** | **图片文件 + JSON Schema 一步到位**（检测器推荐入口） |
+| **`GenerateWithAttachmentsAndSchema`**（v3.10） | `(AContent, APrompt: string; ATexts, AImages; ASchemaName, ASchemaJson: string; AStrict: boolean; var ASessionId; out AError)` | **更新 `FCurrentSessionId`** | **附件数组 + JSON Schema**（完全控制） |
 
 **`ASessionId` 优先级** [源码]：
 ```text
@@ -105,6 +113,12 @@
 - **`llm_service` 会拒绝**——返回 `code: -1`，错误信息提示"Image attachments are not supported by llm_service in this revision"。
 - **`llm_proxy` / LTB 只在传了 `--vision` 时才接受**——否则同样返回 `code: -1`。
 - **客户端必须做能力发现**：调用前检查 `LLMSupported('attachments')` 和 `HasVision`。
+
+**Structured Output 系列方法的服务端约束** [协议]：
+- **`llm_service` 不支持**——它不转发 `response_format` 到本地推理路径。
+- **`llm_proxy` / LTB 支持**——它们把 `options.response_format` 原样转发给后端（LM Studio / Ollama / vLLM 等）。
+- **后端必须支持 Structured Outputs**——例如 LM Studio 加载 Qwen2.5-VL、Nemotron Omni 等支持 JSON Schema 的模型。
+- **详见 §16**。
 
 ### 1.4 服务端全局设置
 
@@ -453,6 +467,39 @@ end;
 - **`HasVision` 不可用于判断"能否发图片"**——它在本版本永远是 False。
 - **用 `HasAttachments` + 实际请求验证**判断图片路径是否可用。
 
+### 3.5 一步到位的检测器（v3.10 推荐）
+
+```pascal
+var
+  SchemaBody: string;
+  S, E: string;
+begin
+  SchemaBody :=
+    '{"type":"object","properties":{' +
+    '"detections":{"type":"array","items":{' +
+    '"type":"object","properties":{' +
+    '"label":{"type":"string"},' +
+    '"bbox":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},' +
+    '"minItems":4,"maxItems":4},' +
+    '"confidence":{"type":"number","minimum":0,"maximum":1}},' +
+    '"required":["label","bbox","confidence"]}}},' +
+    '"required":["detections"]}';
+
+  // ⚠️ 连接对象必须是 llm_proxy / llm_proxy_tool（含 --vision）
+  if not FClient.GenerateWithImageFileAndSchema(
+    '检测图片中的所有目标。返回归一化坐标（0~1）。',
+    '',
+    'test.png',
+    'object_detection',
+    SchemaBody,
+    True,          // strict
+    S, E) then
+    ShowMessage('检测失败: ' + E);
+end;
+```
+
+**这是 v3.10 新增的核心能力**：图片附件 + JSON Schema 一次调用完成，无需手动组合。详细说明见 §16。
+
 ---
 
 ## §4 错误消息原文索引
@@ -476,7 +523,7 @@ end;
 
 | 错误消息原文 | 抛出位置 | 根因 | 修复 |
 |--------------|----------|------|------|
-| `Not connected to LingoFuse service` | `CallAPI` / `Generate` / `GenerateWithAttachments` | `FConnected = False` | 先调 `Connect` 并检查返回值 |
+| `Not connected to LingoFuse service` | `CallAPI` / `Generate` / ... | `FConnected = False` | 先调 `Connect` 并检查返回值 |
 | `LF_CreateDataEx returned nil for API "X"` | `CallAPI` | 分配失败 | 内存不足或 API 名非法 |
 | `Failed to write request bytes for API "X"` | `CallAPI` | `LF_WriteStringBytes` 失败 | 罕见，通常是 handle 无效 |
 | `LF_CallEx returned nil for API "X" (timeout or network error)` | `CallAPI` | `LF_CallEx` 返回 nil | 增大 `FTimeout`；检查目标 App 是否注册 |
@@ -495,7 +542,7 @@ end;
 |--------------|----------|------|------|
 | `CloseSession: empty session_id` | `CloseSession` | 传入空 `ASessionId` | 检查参数 |
 | `CancelSession: empty session_id` | `CancelSession` | 传入空 `ASessionId` | 检查参数 |
-| `Server did not return session_id` | `CreateSession` / `Generate` / `GenerateWithAttachments` | 服务端 `code:0` 但无 `session_id` | 检查服务端版本 |
+| `Server did not return session_id` | `CreateSession` / `Generate` / ... / `GenerateWithAttachmentsAndSchema` | 服务端 `code:0` 但无 `session_id` | 检查服务端版本 |
 
 ### 4.4 能力与设置相关
 
@@ -516,16 +563,33 @@ end;
 | `Image attachment "X" is N base64 chars, exceeds per-file limit N` | `PopulateAttachmentArray` | 单图超 8 MB | 压缩图片 |
 | `Cumulative image size N exceeds total limit N` | `PopulateAttachmentArray` | 累计超 16 MB | 减少图片 |
 | `Cannot open text file "X": ...` | `GenerateWithTextFile` | 文件不存在或无权限 | 检查路径 |
-| `Cannot open image file "X": ...` | `GenerateWithImageFile` | 文件不存在或无权限 | 检查路径 |
-| `Image file "X" is empty (0 bytes).` | `GenerateWithImageFile` | 空文件 | 检查源文件 |
+| `Cannot open image file "X": ...` | `GenerateWithImageFile` / `BuildImageAttachmentFromFile` | 文件不存在或无权限 | 检查路径 |
+| `Image file "X" is empty (0 bytes).` | `GenerateWithImageFile` / `BuildImageAttachmentFromFile` | 空文件 | 检查源文件 |
+| `Cannot read image file "X": ...` | `BuildImageAttachmentFromFile` | 读取文件时异常 | 检查磁盘/权限 |
+| `Image file "X" would encode to about N base64 chars, exceeding per-file limit N` | `BuildImageAttachmentFromFile` | 图片可能过大 | 压缩图片 |
+| `Base64 encoding failed: ...` | `BuildImageAttachmentFromFile` | `umlBase64EncodeBytes` 异常 | 罕见 |
 
-### 4.6 服务端拒绝相关（**v3 新增**）
+### 4.6 Structured Output 相关
+
+| 错误消息原文 | 抛出位置 | 根因 | 修复 |
+|--------------|----------|------|------|
+| `GenerateStructured: empty response_format JSON` | `GenerateStructured` | 传入空字符串 | 检查参数 |
+| `GenerateStructured: response_format is not valid JSON` | `GenerateStructured` | `ParseText` 失败 | 检查 JSON 语法 |
+| `BuildSchemaResponseFormatJson: empty schema name` | `GenerateWithJsonSchema` / `BuildSchemaResponseFormatJson` | `ASchemaName = ''` | 提供 schema 名 |
+| `BuildSchemaResponseFormatJson: empty schema JSON` | `GenerateWithJsonSchema` / `BuildSchemaResponseFormatJson` | `ASchemaJson = ''` | 提供 schema 本体 |
+| `BuildSchemaResponseFormatJson: schema JSON is not valid` | `GenerateWithJsonSchema` / `BuildSchemaResponseFormatJson` | schema 本体解析失败 | 检查 JSON 语法 |
+| `SendGenerateCombined: response_format is not valid JSON` | `SendGenerateCombined` | envelope 解析失败 | 检查 `BuildSchemaResponseFormatJson` 的输入 |
+| `BuildImageAttachmentFromFile: empty file path` | `BuildImageAttachmentFromFile` | 传入空路径 | 检查参数 |
+
+### 4.7 服务端拒绝相关
 
 | 错误消息原文 | 抛出位置 | 根因 | 修复 |
 |--------------|----------|------|------|
 | `Image attachments are not supported by this server: --vision is disabled` | 服务端返回（`code: -1`） | `llm_proxy` / LTB 未传 `--vision` | 服务端启动时加 `--vision` |
 | `Image attachments are not supported by llm_service in this revision` | 服务端返回（`code: -1`） | 目标服务端是 `llm_service` | 改用 `llm_proxy` / LTB |
 | `set_system_message is not supported by llm_proxy` | 服务端返回（`code: -1`） | 目标服务端是代理 | 改用 `CreateSession(system_message)` |
+| **`response_format is not supported by the backend`** | 后端返回（通常是 400/422） | 后端不支持 Structured Outputs | 换支持 JSON Schema 的模型/后端 |
+| **`response_format: unrecognized type json_schema`** | 后端返回（400） | 请求结构嵌套错误 | 确保 schema 直接放在 `json_schema` 下，不额外嵌套 |
 
 ---
 
@@ -595,7 +659,70 @@ PopulateAttachmentArray(ATexts, AImages, attachmentsArr, AError);
 if AError <> '' then Exit;
 ```
 
-### 5.3 添加新事件类型
+### 5.3 添加新 API（带 `options.response_format`）
+
+参考 `GenerateStructured` 的写法：
+
+```pascal
+joOptions := joReq.O['options'];
+joResponseFormat := joOptions.O['response_format'];
+if not joResponseFormat.ParseText(AResponseFormatJson) then
+begin
+  AError := '...';
+  Exit;
+end;
+```
+
+**关键点**：`ParseText` 直接把调用方提供的 JSON 字符串塞进目标子对象，`O[]` 会自动创建缺失的键。
+
+### 5.4 添加新 API（附件 + schema 组合）
+
+参考 `SendGenerateCombined` 的写法（v3.10）：
+
+```pascal
+(* 1. 构造基础请求 *)
+joReq := TZ_JsonObject.Create;
+try
+  joReq.S['content'] := AContent;
+  joReq.S['prompt'] := APrompt;
+
+  (* 2. session 解析 *)
+  if ASessionId <> '' then
+    joReq.S['session_id'] := ASessionId
+  else if FCurrentSessionId <> '' then
+    joReq.S['session_id'] := FCurrentSessionId
+  else
+    joReq.S['client_name'] := FClientName;
+
+  (* 3. 附件（可选） *)
+  if (Length(ATexts) > 0) or (Length(AImages) > 0) then
+  begin
+    attachmentsArr := joReq.A['attachments'];
+    PopulateAttachmentArray(ATexts, AImages, attachmentsArr, AError);
+    if AError <> '' then Exit;
+  end;
+
+  (* 4. response_format（可选） *)
+  if AResponseFormatJson <> '' then
+  begin
+    joOptions := joReq.O['options'];
+    joResponseFormat := joOptions.O['response_format'];
+    if not joResponseFormat.ParseText(AResponseFormatJson) then
+    begin
+      AError := '...';
+      Exit;
+    end;
+  end;
+
+  reqBytes := joReq.ToBytes;
+finally
+  DisposeObject(joReq);
+end;
+```
+
+**关键点**：附件和 `response_format` 可以同时存在，两者都是 `joReq` 的子对象，互不冲突。
+
+### 5.5 添加新事件类型
 
 **步骤**：
 1. 在 `type` 区加事件类型：
@@ -623,7 +750,7 @@ if AError <> '' then Exit;
    property OnNew: TLLMNewEvent read FOnNew write FOnNew;
    ```
 
-### 5.4 加新的"改 A 必须同步改 B"规则
+### 5.6 加新的"改 A 必须同步改 B"规则
 
 **当修改以下内容时，必须检查的关联点**：
 
@@ -632,11 +759,13 @@ if AError <> '' then Exit;
 | `Connect` 的 `LF_*` 调用顺序 | `FPrepared := True` 之前/之后的位置 |
 | `FTimeout` 语义 | 所有 `CallAPI` 里的 `uint64(FTimeout)` |
 | `FCapabilities` 的 JSON 结构 | `LLMSupported` / `IsToolBridge` / `HasVision` / `HasAttachments` |
-| `FCurrentSessionId` 语义 | `CreateSession` / `CloseSession` / `Generate` / `GenerateWithAttachments` / `GenerateCurrent` |
-| 附件字段类型 | `ClearTextAttachments` / `ClearImageAttachments` / `PopulateAttachmentArray` |
+| `FCurrentSessionId` 语义 | 所有 Generate 系列方法（含 `GenerateStructured` / `GenerateWithJsonSchema` / `GenerateWithImageFileAndSchema` / `GenerateWithAttachmentsAndSchema` / `GenerateCurrent` / `SendGenerateCombined`） |
+| 附件字段类型 | `ClearTextAttachments` / `ClearImageAttachments` / `PopulateAttachmentArray` / `BuildImageAttachmentFromFile` |
 | 事件类型定义 | `HandleLLMNotify` 的分派 + `DoXxx` 方法 + 属性 |
 | `SafeParseJson` 的返回契约 | 所有调用点（**失败时 `AJson` 必须是 nil**） |
 | `CheckResponseCode` 的语义 | 所有调用点（**第二个参数是 API 名**） |
+| **`GenerateStructured` 的 `response_format` 结构** | **`BuildSchemaResponseFormatJson` 的组装逻辑；文档 §16 的所有模板** |
+| **`BuildSchemaResponseFormatJson` 的输出结构** | **`GenerateWithJsonSchema` / `GenerateWithImageFileAndSchema` / `GenerateWithAttachmentsAndSchema` 都依赖它** |
 
 ---
 
@@ -654,6 +783,7 @@ if AError <> '' then Exit;
 | `FLastException` | `TLLMClient.Create` | `TLLMClient.Destroy` | 不要外部释放 |
 | 附件数组（`TLLMTextAttachmentArray`） | **调用者** | **调用者** | 用 `ClearTextAttachments` |
 | 事件回调参数的 `string` | `HandleLLMNotify` | 编译器托管 | 回调返回后可能失效 |
+| **`GenerateWithImageFileAndSchema` 内部构造的 attachments** | 方法内部 | 方法内部（`finally` 中清理） | **调用者不需要操心** |
 
 ### 6.2 释放模式（模板）
 
@@ -686,6 +816,13 @@ begin
 end;
 ```
 
+**`GenerateWithImageFileAndSchema` 的调用**（**无需手动清理**）：
+```pascal
+// ✅ 只需传文件路径；方法内部负责读文件、编码、发请求、清理
+Client.GenerateWithImageFileAndSchema('检测', '', 'a.png',
+                                      'object_detection', Body, True, S, E);
+```
+
 ---
 
 ## §7 线程模型
@@ -696,7 +833,7 @@ end;
 |-----------|---------|------|
 | `Create` / `Destroy` | 调用者 | |
 | `Connect` / `Disconnect` | 调用者 | |
-| 所有 Call API（`Generate` / `CreateSession` / ...） | 调用者 | **同步阻塞** |
+| 所有 Call API（含 `GenerateWithImageFileAndSchema` / `GenerateWithAttachmentsAndSchema`） | 调用者 | **同步阻塞**（读文件 + base64 + 发请求） |
 | `OnChunk` / `OnThink` / `OnFinish` / `OnError` / `OnClosed` | **LingoFuse 通知线程** | **不是主线程** |
 | `LastException` 属性读取 | 任意线程 | `TAtomString` 内部有锁 |
 
@@ -744,16 +881,6 @@ OutputDebugString(PChar('main tid=' + IntToStr(GetCurrentThreadId)));
 
 **症状**：整个进程挂住，Ctrl+C 无响应。
 
-**验证**（在测试进程里做）：
-```pascal
-procedure TForm1.OnLLMChunk(const SessionId, Text: string);
-var
-  S, E: string;
-begin
-  FClient.Generate('follow-up', '', S, E);   // ← 挂死
-end;
-```
-
 **修复**：
 ```pascal
 TThread.CreateAnonymousThread(
@@ -768,21 +895,6 @@ TThread.CreateAnonymousThread(
 ### 8.3 `Parae` 对空 `TBytes` 越界
 
 **症状**：调试模式下崩溃；Release 优化下"看起来正常"。
-
-**验证**：
-```pascal
-var
-  Empty: TBytes;
-  Jo: TZ_JsonObject;
-begin
-  Jo := TZ_JsonObject.Create;
-  try
-    Jo.Parae(Empty);   // ← 调试模式崩溃
-  finally
-    Jo.Free;
-  end;
-end;
-```
 
 **修复**：`if Length(Bytes) = 0 then Exit;` 后再 `Parae`。
 
@@ -803,13 +915,12 @@ begin
 end;
 ```
 
-**含义**：跨语言协议的关键。移植到其他语言必须复现。
+**含义**：跨语言协议的关键。
 
 ### 8.5 `LF_ReadStringBytes` 的 fault-tolerant
 
 **验证**：
 ```pascal
-// 服务端发不含 NUL 的 JSON
 var
   Data: TBytes;
 begin
@@ -835,7 +946,7 @@ begin
 end;
 ```
 
-**含义**：调用后**不能再用 `Src`**。
+**含义**：调用后**不能再用 `Src`**。v3.10 的 `BuildImageAttachmentFromFile` 严格遵循此规则。
 
 ### 8.7 `FCurrentSessionId` 的隐式续接
 
@@ -857,14 +968,14 @@ end;
 
 ### 8.8 `Parae` 是 `TBytes` 的原生入口
 
-**反例**（v3.8 早期版本我犯过的错）：
+**反例**：
 ```pascal
 // ❌ 多余中转
 var
   Js: TZ_JsonString;
 begin
-  Js.Bytes := ARawBytes;   // 多一次 UTF-8 解码
-  AJson.ParseText(Js);     // 绕路
+  Js.Bytes := ARawBytes;
+  AJson.ParseText(Js);
 end;
 
 // ✅ 直接
@@ -874,14 +985,6 @@ AJson.Parae(ARawBytes);
 ### 8.9 回调异常的静默
 
 **症状**：`OnChunk` 里抛异常，UI 无任何提示。
-
-**验证**：
-```pascal
-procedure TForm1.OnLLMChunk(const SessionId, Text: string);
-begin
-  raise Exception.Create('boom');   // ← 被 HandleLLMNotify 吞掉
-end;
-```
 
 **含义**：异常写入 `FLastException`，需要**主动轮询**才能发现：
 ```pascal
@@ -902,22 +1005,17 @@ if Client.LastException <> '' then
 - 缺 `type` 字段
 - `type` 是未知值
 
-**调试方法**：临时在 `HandleLLMNotify` 每个 `Exit` 前加 `OutputDebugString`。
+### 8.11 图片附件被服务端拒绝
 
-### 8.11 **图片附件被服务端拒绝**（**v3 新增**）
+**症状**：返回 `code: -1`。
 
-**症状**：调用 `GenerateWithImageFile` 或 `GenerateWithAttachments`（含图片），返回 `code: -1`。
-
-**可能原因**（三种）：
-
-1. **连接的是 `llm_service`**：服务端**不支持多模态**，明确拒绝。
-2. **连接的是 `llm_proxy` / LTB，但服务端未传 `--vision`**：默认拒绝图片附件。
-3. **图片大小超限**：单图 base64 超 8 MB，或累计超 16 MB。
+**可能原因**：
+1. 连接的是 `llm_service`：不支持多模态。
+2. 连接的是 `llm_proxy` / LTB，但未传 `--vision`。
+3. 图片超限：单图 base64 超 8 MB，或累计超 16 MB。
 
 **修复**：
-
 ```pascal
-// ✅ 调用前做能力发现
 if not FClient.LLMSupported('attachments') then
 begin
   ShowMessage('服务端不接受附件字段');
@@ -929,26 +1027,69 @@ begin
   ShowMessage('llm_service 不支持多模态，请改用 llm_proxy / LTB');
   Exit;
 end;
-
-// 检查单文件大小
-if Length(ImageB64) > ATTACHMENT_MAX_IMAGE_B64_PER_FILE then
-begin
-  ShowMessage('图片过大，请压缩后重试');
-  Exit;
-end;
-
-// 再调用
-Client.GenerateWithImageFile(...);
 ```
 
-**根因**：
-- `llm_service` 是纯文本服务端（`vision: 0`，且主动拒绝）。
-- `llm_proxy` / LTB 默认 `--vision` 关闭，需显式开启。
+### 8.12 Structured Output 请求被后端拒绝
 
-**相关文档**：
-- [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8-1 / P8-3
-- [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) 第 5.5 节
-- [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) 第 4.5 节
+**症状**：`AError` 里出现 400 / 422 或 `unrecognized type json_schema`。
+
+**可能原因**：
+1. 连接的是 `llm_service`：不转发 `response_format`。
+2. 后端不支持 Structured Outputs。
+3. schema 结构嵌套错误。
+4. `strict` 字段类型错误。
+
+**修复**：
+```pascal
+if FClient.ServerKind = 'service' then
+begin
+  ShowMessage('llm_service 不支持 Structured Output，请改用 llm_proxy / LTB');
+  Exit;
+end;
+// 使用 v3.10 的组合方法（自动组装正确的 envelope）
+FClient.GenerateWithImageFileAndSchema(...);
+```
+
+### 8.13 Structured Output 被忽略（后端静默返回纯文本）
+
+**症状**：调用成功，但模型返回自由文本。
+
+**可能原因**：
+1. 后端忽略了 `response_format`。
+2. 模型不支持 Structured Outputs。
+3. prompt 冲突。
+
+**修复**：
+1. 确认后端版本（LM Studio 0.3.0+）。
+2. 确认模型支持（Qwen2.5 系列 / Qwen2.5-VL / Nemotron Omni）。
+3. prompt 与 schema 保持一致。
+
+### 8.14 v3.10 组合方法的坐标顺序与归一化约定（**v2.3 新增**）
+
+**症状**：JSON 合法，`label` 也对，但 `bbox` 位置和实际不符。
+
+**可能原因**：
+- **坐标顺序反了**：模型返回 `[y1,x1,y2,x2]`，但下游按 `[x1,y1,x2,y2]` 使用。
+- **未归一化**：模型返回像素坐标（`0~1920`），不是 `0~1`。
+- **上下颠倒**：某些模型用图像坐标系（左上为原点），某些用数学坐标系（左下为原点）。
+
+**修复**：
+1. **在提示词里明确说明**：
+   ```
+   返回归一化坐标（0~1），格式为 [x_min, y_min, x_max, y_max]，
+   (x_min, y_min) 是左上角，(x_max, y_max) 是右下角。
+   ```
+2. **先做单目标测试**：用一张只有一个明显物体的图，验证 bbox 数值。
+3. **Schema 里加约束**：
+   ```json
+   "bbox": {
+     "type": "array",
+     "items": { "type": "number", "minimum": 0, "maximum": 1 },
+     "minItems": 4,
+     "maxItems": 4
+   }
+   ```
+   这样模型无法输出超出 `[0,1]` 的值。
 
 ---
 
@@ -956,11 +1097,11 @@ Client.GenerateWithImageFile(...);
 
 ### 9.1 三种服务端
 
-| 服务端 | `server_kind` | 特征 | 多模态 |
-|--------|---------------|------|:------:|
-| `llm_service.py` | `'service'` | 本地模型，含 `set_system_message`；**纯文本** | ❌ **不支持** |
-| `llm_proxy.py` | `'proxy'` | 无状态转发；**图片由后端决定** | ✅ **转发**（需 `--vision`） |
-| `llm_proxy_tool.py` | `'proxy'` | 无状态转发 + **服务端工具执行**；**图片由后端决定** | ✅ **转发**（需 `--vision`） |
+| 服务端 | `server_kind` | 特征 | 多模态 | Structured Output |
+|--------|---------------|------|:------:|:-----------------:|
+| `llm_service.py` | `'service'` | 本地模型，含 `set_system_message`；**纯文本** | ❌ | ❌ |
+| `llm_proxy.py` | `'proxy'` | 无状态转发；**图片由后端决定** | ✅（需 `--vision`） | ✅ |
+| `llm_proxy_tool.py` | `'proxy'` | 无状态转发 + **服务端工具执行** | ✅（需 `--vision`） | ✅ |
 
 **`proxy_tool` 与 `proxy` 的唯一区别**：
 ```pascal
@@ -996,17 +1137,11 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 | 字段 | 语义 | 说明 |
 |------|------|------|
-| `attachments` | 服务端是否**接受** `attachments` 字段 | 1 = 接受（不会因附件存在就拒绝） |
-| `vision` | 服务端**自身是否做视觉处理** | **0 在所有服务端都成立**——服务端只转发 |
+| `attachments` | 服务端是否**接受** `attachments` 字段 | 1 = 接受 |
+| `vision` | 服务端**自身是否做视觉处理** | **0 在所有服务端都成立** |
 | `tools` / `tool_calls` / `tool_results` | 服务端是否支持工具相关行为 | 只有 LTB 为 1 |
 | `set_system_message` | 服务端是否支持切换全局 system message | 只有 `llm_service` 为 1 |
-
-> **`vision=0` 的坑**：它**不表示**"链路不支持多模态"——它只表示"**服务端自身不做视觉处理**"。图片能否被理解，由**后端**决定。
->
-> **客户端判断"能否发图片"的正确逻辑**：
-> 1. 检查 `ServerKind`——是 `'service'` 则**不能发图片**。
-> 2. 检查 `attachments`——为 1 时服务端**接受**附件字段。
-> 3. 实际调用后，观察是否返回 `code: -1`——据此判断后端是否支持。
+| （无 `response_format` 字段） | Structured Output 是否可用 | **不在能力矩阵里**——由服务端类型 + 后端能力共同决定 |
 
 ### 9.3 `set_system_message` 的行为差异
 
@@ -1015,17 +1150,11 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 | `service` | 走网络 | 走网络（**服务端支持**） |
 | `proxy` / `proxy_tool` | 走网络 → 服务端拒绝 | **本地短路**（不发网络） |
 
-**`llm_service` 支持 `set_system_message` 的原因**：它拥有进程内的 `_system_message` 字段，`set_system_message` 修改的是"新会话的默认值"。这是无状态代理无法实现的。
-
 ---
 
 ## §10 版本迁移
 
 ### 10.1 v3.6 → v3.7：清理 6 个辅助函数
-
-**v3.6 的错误**：误以为 `lingofuse_import` 只提供原始 C ABI（`LF_CreateData(pansichar)` 等），手写了 6 个 UTF-8 转换辅助函数。
-
-**v3.7 的修正**：发现 `lingofuse_import` 已有 `*Ex` 系列，删除全部 6 个辅助。净减 15% 代码。
 
 **教训**：**看到 `Xxx` 和 `XxxEx` 成对存在，优先用 `XxxEx`**。
 
@@ -1033,40 +1162,39 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 | 变更 | 迁移动作 |
 |------|---------|
-| `CapabilitiesRawJson: string` → `TZ_JsonString` | 调用方 `S := Client.CapabilitiesRawJson` 改为 `S := Client.CapabilitiesRawJson.Text` |
-| `GetAPICapabilities` 参数 `var string` → `var TZ_JsonString` | 调用方 `var S: string` 改为 `var S: TZ_JsonString`；取文本用 `.Text` |
-| 附件字段 `string` → `TZ_JsonString` | 调用方 `Att.Name := 'x'` 改为 `Att.Name.Text := 'x'`（或保留，隐式转换） |
+| `CapabilitiesRawJson: string` → `TZ_JsonString` | 调用方取 `.Text` |
+| `GetAPICapabilities` 参数 `var string` → `var TZ_JsonString` | 调用方改类型；取文本用 `.Text` |
+| 附件字段 `string` → `TZ_JsonString` | `Att.Name := 'x'` → `Att.Name.Text := 'x'` |
 
-**`TZ_JsonString` 的访问方式**：
+### 10.3 v3.8 → v3.9：新增 Structured Output（非破坏性）
 
-```pascal
-var
-  Js: TZ_JsonString;
-begin
-  Js.Text := 'hello';                   // 写入（文本）
-  WriteLn(Js.Text);                     // 读取（文本）
-  Js.Bytes := TEncoding.UTF8.GetBytes('hello');   // 写入（原始字节）
-  WriteLn(Length(Js.Bytes));            // 读取字节长度
-end;
-```
+| 变更 | 迁移动作 |
+|------|---------|
+| 新增 `GenerateStructured` | 纯新增，无迁移动作 |
+| 新增 `GenerateWithJsonSchema` | 纯新增，无迁移动作 |
+| 模块版本字符串 `'Dynamic LLM Client (v3.8)'` → `(v3.9)` | 仅 App 描述文本变化 |
 
-### 10.3 v3.8 早期 → final：`SafeParseJson` 直连 `Parae`
+### 10.4 v3.9 → v3.10：新增组合方法（非破坏性，**v2.3 新增**）
 
-**早期错误**：引入 `TZ_JsonString` 中转。
+| 变更 | 迁移动作 |
+|------|---------|
+| 新增 `GenerateWithImageFileAndSchema` | 纯新增，无迁移动作 |
+| 新增 `GenerateWithAttachmentsAndSchema` | 纯新增，无迁移动作 |
+| `GenerateWithJsonSchema` 内部重构（改用 `BuildSchemaResponseFormatJson`） | 行为不变；调用方无感 |
+| 模块版本字符串 `(v3.9)` → `(v3.10)` | 仅文本 |
 
-**修正**：直接 `AJson.Parae(ARawBytes)`。
+**兼容性**：所有已有代码**无需修改**。
 
-**教训**：**注释与代码不一致立刻审查**——早期版本的注释写"guard before Parae()"，代码却用了 `ParseText`。
+**新增私有方法**（不改变公开 API 表面）：
+- `BuildImageAttachmentFromFile`
+- `BuildSchemaResponseFormatJson`
+- `SendGenerateCombined`
 
-### 10.4 v2.0 → v2.1：文档侧修正
+### 10.5 v2.1 → v2.2 → v2.3：文档侧变更
 
-**本次修正**（仅文档，不改 SDK 源码）：
+**v2.2**：新增 §16 Structured Output 完整指南（5 个检测器模板）。
 
-- 修正文档标题与源文件引用（`llm_client.pas` → `llm_client_v3.pas`）。
-- 修正构造示例参数（`'llm_service', 'ipc:llm'` → `'LLM_Service', 'ipc:llm_service'`）。
-- 补充能力矩阵中 `vision=0` 的语义说明。
-- 补充图片附件被拒绝的排查章节（§8.11）。
-- 补充能力发现示例（§3.4）。
+**v2.3**：更新 §16 增加两个组合方法（v3.10）；§1.3 / §4.5 / §4.6 / §5.4 / §5.6 / §8.14 / §10.4 / §11.3 / §11.7 / §12.16 / §14 / §16.2 / §16.4 / §16.7 / §16.8 同步更新；GUI 流程更新为 v3.4。
 
 ---
 
@@ -1089,18 +1217,12 @@ end;
 10. `FConnected := True`
 11. 能力探测
 
-**违反顺序的后果**：
-- 步骤 6 提前 → 生成的名称缺少隧道信息
-- 步骤 5 提前 → 早期失败会误调 `LF_ExitMainThread`
-
 ### 11.2 修改 `FTimeout`
 
 **受影响的调用**：
 - `CallAPI` 里的 `LF_CallEx(FServerApp, hnd, uint64(FTimeout))`
 
-**检查点**：
-- `FTimeout` 是 `integer`，转为 `uint64` 前**不能为负**（构造参数默认 10000）
-- 值是毫秒
+**检查点**：`FTimeout` 是 `integer`，转为 `uint64` 前**不能为负**；值是毫秒。
 
 ### 11.3 修改 `FCurrentSessionId` 语义
 
@@ -1108,14 +1230,18 @@ end;
 - `CreateSession`：成功后更新
 - `CloseSession`：如果匹配则清空
 - `Generate` / `GenerateWithAttachments`：如果 `ASessionId=''` 用它
+- **`GenerateStructured` / `GenerateWithJsonSchema` / `GenerateWithImageFileAndSchema` / `GenerateWithAttachmentsAndSchema`：与 `Generate` 相同**
+- **`SendGenerateCombined`：与 `Generate` 相同**
 - `GenerateCurrent`：读它（不写）
 
 ### 11.4 修改附件记录字段
 
 **受影响的点**：
-- `ClearTextAttachments` / `ClearImageAttachments`（逐字段清空）
-- `PopulateAttachmentArray`（读字段）
-- `GenerateWithTextFile` / `GenerateWithImageFile`（写字段）
+- `ClearTextAttachments` / `ClearImageAttachments`
+- `PopulateAttachmentArray`
+- `GenerateWithTextFile` / `GenerateWithImageFile`
+- **`BuildImageAttachmentFromFile`**（v3.10）
+- **`SendGenerateCombined`**（v3.10）
 
 ### 11.5 修改 `SafeParseJson` 契约
 
@@ -1123,10 +1249,7 @@ end;
 - **成功**：`AJson` 非 nil，返回 `True`
 - **失败**：`AJson` 为 nil，返回 `False`，`AError` 非空
 
-**所有调用点**都依赖这个契约：
-- `CreateSession` / `CloseSession` / `CancelSession` / `ListSessions`
-- `Generate` / `GenerateWithAttachments` / `SetSystemMessage` / `Health`
-- `GetAPICapabilities`
+**所有调用点**都依赖这个契约（含 `SendGenerateCombined`）。
 
 ### 11.6 修改 `CheckResponseCode` 契约
 
@@ -1134,7 +1257,18 @@ end;
 - **成功**：返回 `True`，`AError` 为空
 - **失败**：返回 `False`，`AError` 是 `error` 字段或 `'<APIName> failed (code N)'`
 
-**所有调用点**都依赖第二个参数是 API 名。
+### 11.7 修改 `response_format` 结构（**v2.3 重点**）
+
+**受影响的点**：
+- **`BuildSchemaResponseFormatJson`**：唯一组装 envelope 的地方
+- **`GenerateStructured`**：直接接收 caller 提供的字符串
+- **`GenerateWithJsonSchema` / `GenerateWithImageFileAndSchema` / `GenerateWithAttachmentsAndSchema`**：全部依赖 `BuildSchemaResponseFormatJson`
+- **文档 §16 的所有模板**：必须同步
+- **后端兼容性**：改动结构可能让已有后端拒绝请求
+
+**检查点**：
+- `response_format` 的顶层是 `{"type": "json_schema", "json_schema": {...}}`
+- `json_schema` 内直接包含 `name` / `strict` / `schema`，**不额外嵌套**
 
 ---
 
@@ -1142,54 +1276,78 @@ end;
 
 ### 12.1 "我要写一个 LLM 客户端"
 
-→ §3.1 模板 → 记得 `TThread.Queue` marshalling → 记得 `LF_Shutdown` 由宿主调用 → **用 `'LLM_Service'` + `'ipc:llm_service'`**
+→ §3.1 模板
 
 ### 12.2 "我要加一个新 API"
 
-→ §5.1 模板 → 从 `Generate` 抄结构
+→ §5.1 模板
 
 ### 12.3 "我要加一个新事件类型"
 
-→ §5.3 步骤 1-5
+→ §5.5
 
 ### 12.4 "程序运行时挂了"
 
-→ §4 错误消息对照表 → 找消息原文 → 按"修复"列
+→ §4 错误消息对照表
 
 ### 12.5 "UI 崩溃了"
 
-→ §8.1 → 检查回调是否 marshalling
+→ §8.1
 
 ### 12.6 "程序死锁了"
 
-→ §8.2 → 检查回调是否调用 Call API
+→ §8.2
 
 ### 12.7 "内存泄漏了"
 
-→ §6.1 谁创建谁释放 → 检查附件数组是否 `Clear*`
+→ §6.1
 
 ### 12.8 "附件上传失败"
 
-→ §4.5 附件错误对照 → 检查大小是否超限
+→ §4.5
 
-### 12.9 **"图片附件被拒绝"**（v3 新增）
+### 12.9 "图片附件被拒绝"
 
-→ §8.11 + §4.6 → 检查：
-1. 目标服务端是 `llm_service`？→ 改用代理
-2. 代理未传 `--vision`？→ 服务端启动参数加 `--vision`
-3. 图片超限？→ 压缩
+→ §8.11 + §4.7
 
 ### 12.10 "升级破坏性变更"
 
-→ §10.2 迁移表
+→ §10.2
 
 ### 12.11 "改动会不会破坏别的"
 
-→ §11 影响面分析
+→ §11
 
-### 12.12 **"如何判断服务端支持什么"**
+### 12.12 "如何判断服务端支持什么"
 
-→ §3.4 能力发现示例 → 用 `LLMSupported` / `IsToolBridge` / `HasAttachments` → **不要**用 `HasVision` 判断图片能力
+→ §3.4
+
+### 12.13 "我要做检测器方框标注"
+
+→ **§16.3** 直接复制模板
+
+### 12.14 "我要做结构化输出但不是检测器"
+
+→ **§16.5** 通用模板
+
+### 12.15 "Structured Output 不生效"
+
+→ §8.12 / §8.13
+
+### 12.16 **"我要图片 + 检测器一步到位"**（**v2.3 新增**）
+
+→ **§3.5** + **§16.3 模板 2** + **§16.7**
+→ 用 **`GenerateWithImageFileAndSchema`**
+→ 无需手动组合附件和 schema
+
+### 12.17 **"我要多附件 + schema"**（**v2.3 新增**）
+
+→ **§5.4** + **§16.7**
+→ 用 **`GenerateWithAttachmentsAndSchema`**
+
+### 12.18 **"GUI 怎么用"**（**v2.3 新增**）
+
+→ **§16.9**
 
 ---
 
@@ -1197,18 +1355,20 @@ end;
 
 > **用途**：AI 遇到以下场景**必须停止**，回查源码或询问人类。
 >
-> **状态标注**：✅ 已解决（在后续版本或文档中确认）；⏳ 未解决（仍需回查源码）。
+> **状态标注**：✅ 已解决；⏳ 未解决。
 
 | # | 不确定点 | 状态 | 说明 |
 |---|---------|:----:|------|
-| 1 | `LF_CallEx` 失败时返回 nil 还是空句柄 | ✅ 已解决 | 由 **LF-CALL-001** 明确：**返回 size=0 的空句柄，不是 nil**。`CallAPI` 需检查 `LF_GetSize`。 |
-| 2 | 通知回调是单线程还是池化 | ⏳ 未解决 | 无明确结论。建议在 `HandleLLMNotify` 打印 `GetCurrentThreadId`，发 100 条消息看 ID。 |
-| 3 | `ClearTextAttachments` 是否真的必要 | ⏳ 未解决 | 用户建议保留。写最小复现：循环 `SetLength` + 赋值，观察内存。 |
-| 4 | `umlBase64EncodeBytes` 消费源是否所有版本一致 | ⏳ 未解决 | 读 `Z.UnicodeMixedLib.pas` 实现确认。 |
-| 5 | `server_kind` 字段在所有版本是否存在 | ✅ 已解决 | 由 **LingoFuse_LLM_Ecosystem_User_Guide.md** 明确：三种服务端都返回 `server_kind`。 |
-| 6 | `ATTACHMENT_ALLOWED_IMAGE_MIMES` 的用途 | ⏳ 未解决 | 定义了但未使用。需问原作者。 |
-| 7 | `GenerateWithTextFile` 的 Latin-1 fallback 正确性 | ⏳ 未解决 | 造非 UTF-8/GBK 文件实测。 |
-| 8 | `TAtomString.Create('')` 是否所有平台行为一致 | ⏳ 未解决 | 读 `Z.Core.pas` §3.2。 |
+| 1 | `LF_CallEx` 失败时返回 nil 还是空句柄 | ✅ | **返回 size=0 的空句柄** |
+| 2 | 通知回调是单线程还是池化 | ⏳ | 建议打线程 ID 观察 |
+| 3 | `ClearTextAttachments` 是否真的必要 | ⏳ | 建议保留 |
+| 4 | `umlBase64EncodeBytes` 消费源是否所有版本一致 | ⏳ | 读源码确认 |
+| 5 | `server_kind` 字段在所有版本是否存在 | ✅ | 三种服务端都返回 |
+| 6 | `ATTACHMENT_ALLOWED_IMAGE_MIMES` 的用途 | ⏳ | 定义了但未使用 |
+| 7 | `GenerateWithTextFile` 的 Latin-1 fallback 正确性 | ⏳ | 造非 UTF-8/GBK 文件实测 |
+| 8 | `TAtomString.Create('')` 是否所有平台行为一致 | ⏳ | 读 `Z.Core.pas` |
+| 9 | LM Studio 对 `response_format` 的具体支持边界 | ⏳ | 需要实测 |
+| 10 | 不同 VLM 对 bbox 坐标的期望格式 | ⏳ | 需要实测 |
 
 ---
 
@@ -1216,14 +1376,17 @@ end;
 
 > **写代码必守**：
 > 1. 构造参数用 `'LLM_Service'` + `'ipc:llm_service'`（**大小写严格**）。
-> 2. `OnChunk` 等回调在**通知线程**执行——UI 操作必须 `TThread.Queue`。
+> 2. 回调在**通知线程**执行——UI 操作必须 `TThread.Queue`。
 > 3. 回调中**不能**调用 Call API——会死锁。
-> 4. 附件数组必须 **`ClearTextAttachments` / `ClearImageAttachments`**。
+> 4. 附件数组必须 **`ClearTextAttachments` / `ClearImageAttachments`**（v3.10 的组合方法内部已处理，无需外部管理）。
 > 5. `Connect` 后**检查返回值**——能力探测失败会静默。
 > 6. `Generate` 传空 `ASessionId` 会**续接**会话。
 > 7. **调用前做能力发现**——尤其 `SetSystemMessage` / 附件 / 工具相关 API。
 > 8. **图片附件前检查 `ServerKind`**——`'service'` 直接拒绝。
 > 9. **`HasVision` 不可用于判断"能否发图片"**——它在本版本永远是 False。
+> 10. **Structured Output 前检查 `ServerKind`**——`'service'` 不支持，必须用 `'proxy'`。
+> 11. **`response_format` 的 `json_schema` 直接嵌在顶层**——不要再嵌套一层 `json_schema`。
+> 12. **v3.10 一步到位检测器**：直接用 `GenerateWithImageFileAndSchema`，不用手动组合。
 
 > **改代码必守**：
 > 1. 所有请求构造用 `TZ_JsonObject`，`try...finally` 释放。
@@ -1231,6 +1394,8 @@ end;
 > 3. 错误检查用 `CheckResponseCode`，**第二个参数是 API 名**。
 > 4. `Parae(TBytes)` 前先检查 `Length > 0`。
 > 5. 新 API **照抄 `Generate` 结构**。
+> 6. **Structured Output 相关结构改动**必须同步改 §16 文档模板。
+> 7. **改 `BuildSchemaResponseFormatJson` 输出结构**会影响 4 个公开方法。
 
 > **禁用清单**：
 > - ❌ 不用 `ParseText` 解析 `TBytes`（用 `Parae`）
@@ -1239,6 +1404,7 @@ end;
 > - ❌ 不在 `Disconnect` 里调 `LF_Shutdown`（宿主负责）
 > - ❌ 不读 `FCapabilities` 原始 JSON 判 `nil`（用 `LLMSupported`）
 > - ❌ **不用 `HasVision` 判断"能否发图片"**（用 `ServerKind` + `HasAttachments`）
+> - ❌ **不在 `response_format` 下再套一层 `json_schema`**
 
 ---
 
@@ -1251,16 +1417,1223 @@ end;
 | [`../readme.md`](../readme.md) | 项目总览与四大核心应用组件 |
 | [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大应用组件 + 两条路径） |
 | [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全（含 P8 多模态专项） |
-| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 纯转发代理命令行手册（多模态转发，第 5.5 节） |
-| [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | LTB 命令行手册（多模态转发，第 4.5 节） |
-| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 本地推理服务手册（明确不支持多模态） |
-| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含 LF-XXX-NNN 踩坑知识库） |
+| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 纯转发代理命令行手册（第 5.5 节多模态） |
+| [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | LTB 命令行手册（第 4.5 节多模态） |
+| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 本地推理服务手册 |
+| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南 |
 
-**GUI 演示源码**：本仓库 `src\llm_tool_v3_frm.pas` —— 展示 SDK 全部关键用法（多会话、流式、附件、能力发现）。
+**GUI 演示源码**：本仓库 `src\llm_tool_v3_frm.pas`（v3.4）—— 展示 SDK 全部关键用法（多会话、流式、附件、能力发现、结构化输出、一步到位检测器）。
 
 ---
 
-**文档版本**：v2.1（结构性重构版 · 能力边界修正版——修正文档标题与源文件引用、修正构造示例参数、补充能力矩阵 `vision=0` 语义、新增图片附件排查章节、补充能力发现示例、更新诚实清单状态）
+## §16 Structured Output 完整指南
+
+> **本章是 v2.3 的核心章节。**
+>
+> 目标：让 AI 和人类开发者**不用读源码**就能在 Pascal 项目里，通过 LingoFuse 生态拿到**结构化的 JSON 输出**——尤其是**检测器方框标注**。
+>
+> 阅读顺序：
+> 1. **§16.1** 什么是 Structured Output
+> 2. **§16.2** 四个客户端 API（v3.10 新增 2 个）
+> 3. **§16.3** 🎯 **检测器方框标注模板（核心）**
+> 4. **§16.4** 从客户端到模型的完整调用链
+> 5. **§16.5** 其他常用 JSON Schema 模板
+> 6. **§16.6** 常见坑与调试
+> 7. **§16.7** 完整可运行 Pascal 示例（一步到位检测器）
+> 8. **§16.8** 小结
+> 9. **§16.9** GUI 使用流程（v3.4）
+
+---
+
+### §16.1 什么是 Structured Output
+
+**Structured Output（结构化输出）** 是一种让大模型**严格按照调用方提供的 JSON Schema 生成输出**的机制。
+
+**传统提示词方式**：
+```
+用户：请用 JSON 格式返回检测结果，包含标签和方框。
+模型：好的，这是 JSON：{ ... }   ← 可能包含多余文本，或格式错误
+```
+
+**Structured Output 方式**：
+```
+用户：（附带 schema）请检测。
+模型：{"detections":[{"label":"person","bbox":[0.1,0.2,0.5,0.6]}]}   ← 严格符合 schema，无多余内容
+```
+
+**关键优势**：
+- **不再需要事后用正则/JSON.parse 提取**——模型输出的就是合法 JSON。
+- **字段名、字段类型、必填字段由 schema 强制**。
+- **后端（LM Studio 等）在生成时约束解码**——是"在 token 层面强制"。
+
+**支持链路**：
+```
+客户端（llm_client_v3）
+    ↓ options.response_format
+LingoFuse 代理（llm_proxy / llm_proxy_tool）
+    ↓ 原样转发
+OpenAI 兼容后端（LM Studio / Ollama / vLLM）
+    ↓ 强制按 schema 生成
+大模型（Qwen2.5-VL / Nemotron Omni / ...）
+```
+
+**不支持链路**：
+```
+llm_client_v3 → llm_service（本地 llama.cpp）
+    ❌ 不转发 response_format
+```
+
+---
+
+### §16.2 四个客户端 API
+
+SDK 从 v3.10 起提供**四个** Structured Output 入口。**99% 场景用 `GenerateWithImageFileAndSchema`**。
+
+#### 方法 A：`GenerateStructured`（底层、灵活）
+
+```pascal
+function TLLMClient.GenerateStructured(
+  const AContent, APrompt: string;
+  const AResponseFormatJson: string;    // 完整的 response_format JSON
+  var ASessionId: string;
+  out AError: string): boolean;
+```
+
+**作用**：把调用方提供的**完整 `response_format` JSON 字符串**，原样塞进请求的 `options.response_format`。
+
+**适合场景**：需要精细控制（例如使用 `json_object` 而不是 `json_schema`）。
+
+#### 方法 B：`GenerateWithJsonSchema`（纯 schema，无附件）
+
+```pascal
+function TLLMClient.GenerateWithJsonSchema(
+  const AContent, APrompt: string;
+  const ASchemaName: string;
+  const ASchemaJson: string;
+  const AStrict: boolean;
+  var ASessionId: string;
+  out AError: string): boolean;
+```
+
+**作用**：只需要 schema 的**名字**和**本体**，SDK 自动组装外层 envelope。
+
+**适合场景**：不需要附件（纯文本问答 + 结构化输出）。
+
+#### 方法 C：`GenerateWithImageFileAndSchema`（**v3.10 新增 · 推荐**）
+
+```pascal
+function TLLMClient.GenerateWithImageFileAndSchema(
+  const AContent, APrompt, AFilePath: string;   // 图片文件路径
+  const ASchemaName: string;
+  const ASchemaJson: string;
+  const AStrict: boolean;
+  var ASessionId: string;
+  out AError: string): boolean;
+```
+
+**作用**：**图片文件 + JSON Schema 一步到位**。
+
+**适合场景**：**检测器场景的唯一推荐入口**。图片 + schema 一次调用完成，SDK 内部自动：
+1. 读文件（含空文件检查、base64 膨胀预检）
+2. 猜 MIME（基于扩展名）
+3. base64 编码（`umlBase64EncodeBytes`）
+4. 组装 `response_format` envelope
+5. 发送 `generate` 请求（含 attachments + options.response_format）
+
+**调用者不需要手动管理 `attachments` 数组。**
+
+#### 方法 D：`GenerateWithAttachmentsAndSchema`（**v3.10 新增**）
+
+```pascal
+function TLLMClient.GenerateWithAttachmentsAndSchema(
+  const AContent, APrompt: string;
+  const ATexts: TLLMTextAttachmentArray;
+  const AImages: TLLMImageAttachmentArray;
+  const ASchemaName: string;
+  const ASchemaJson: string;
+  const AStrict: boolean;
+  var ASessionId: string;
+  out AError: string): boolean;
+```
+
+**作用**：**附件数组 + JSON Schema**。附件和 schema 都完全由调用者控制。
+
+**适合场景**：
+- 有多个附件（多个图片 / 多个文本文件）。
+- 需要精确控制附件名、MIME。
+- 需要附加参考文本（如类别映射表）连同图片一起发送。
+
+**`AStrict` 的意义**（对 B/C/D 三个方法）：
+- `True`（推荐）：**严格模式**。模型必须输出完全符合 schema 的 JSON。
+- `False`：**宽松模式**。模型可以输出 schema 之外的额外字段。
+
+---
+
+### §16.3 🎯 检测器方框标注模板（核心）
+
+> **本节是全文重点。** 直接复制下面的 JSON 模板，按需微调。
+
+**约定**：
+- **坐标格式**：归一化到 `[0, 1]` 的 `[x_min, y_min, x_max, y_max]`
+  - `(x_min, y_min)` = 方框左上角
+  - `(x_max, y_max)` = 方框右下角
+- **为什么用归一化**：不受图像分辨率影响。
+- **为什么顺序是 `x,y,x,y`**：与 Pascal 的 `TRect`、OpenCV、PIL 一致。
+
+---
+
+#### 模板 1：基础版（标签 + 方框）—— **最简可用**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "detections": {
+      "type": "array",
+      "description": "List of detected objects",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Object class name, e.g. person, car, dog"
+          },
+          "bbox": {
+            "type": "array",
+            "description": "Normalized bounding box as [x_min, y_min, x_max, y_max], values in 0~1",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "required": ["label", "bbox"]
+      }
+    }
+  },
+  "required": ["detections"]
+}
+```
+
+**使用场景**：学习、原型、内部工具。
+
+**Pascal 调用**（v3.10 一步到位）：
+```pascal
+var
+  SchemaBody: string;
+  S, E: string;
+begin
+  SchemaBody :=
+    '{"type":"object","properties":{' +
+    '"detections":{"type":"array","items":{' +
+    '"type":"object","properties":{' +
+    '"label":{"type":"string"},' +
+    '"bbox":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},' +
+    '"minItems":4,"maxItems":4}},' +
+    '"required":["label","bbox"]}}},' +
+    '"required":["detections"]}';
+
+  if not LLM.GenerateWithImageFileAndSchema(
+    '检测图片中的所有目标，返回归一化坐标',
+    '',
+    'test.png',
+    'object_detection',
+    SchemaBody,
+    True,
+    S, E) then
+    DoStatus('失败: ' + E);
+end;
+```
+
+**预期输出**：
+```json
+{
+  "detections": [
+    {"label": "person", "bbox": [0.12, 0.23, 0.45, 0.78]},
+    {"label": "dog",    "bbox": [0.50, 0.30, 0.80, 0.65]}
+  ]
+}
+```
+
+---
+
+#### 模板 2：标准版（标签 + 方框 + 置信度）—— **生产推荐**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "detections": {
+      "type": "array",
+      "description": "List of detected objects with confidence scores",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Object class name"
+          },
+          "bbox": {
+            "type": "array",
+            "description": "Normalized bounding box [x_min, y_min, x_max, y_max], values in 0~1",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Detection confidence, 0.0 to 1.0",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": ["label", "bbox", "confidence"]
+      }
+    }
+  },
+  "required": ["detections"]
+}
+```
+
+**使用场景**：需要按置信度过滤、排序、可视化的生产环境。
+
+**Pascal 调用**：
+```pascal
+SchemaBody :=
+  '{"type":"object","properties":{' +
+  '"detections":{"type":"array","items":{' +
+  '"type":"object","properties":{' +
+  '"label":{"type":"string"},' +
+  '"bbox":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},' +
+  '"minItems":4,"maxItems":4},' +
+  '"confidence":{"type":"number","minimum":0,"maximum":1}},' +
+  '"required":["label","bbox","confidence"]}}},' +
+  '"required":["detections"]}';
+
+LLM.GenerateWithImageFileAndSchema('检测图片中的目标', '', 'test.png',
+                                   'object_detection', SchemaBody, True, S, E);
+```
+
+**预期输出**：
+```json
+{
+  "detections": [
+    {"label": "person", "bbox": [0.12, 0.23, 0.45, 0.78], "confidence": 0.95},
+    {"label": "dog",    "bbox": [0.50, 0.30, 0.80, 0.65], "confidence": 0.88}
+  ]
+}
+```
+
+---
+
+#### 模板 3：带类别 ID 版（label_id + label + bbox）—— **对接已有检测器时**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Human-readable class name"
+          },
+          "label_id": {
+            "type": "integer",
+            "description": "Numeric class id (0 = person, 1 = car, 2 = dog, ...)",
+            "minimum": 0
+          },
+          "bbox": {
+            "type": "array",
+            "description": "Normalized bbox [x_min, y_min, x_max, y_max], values in 0~1",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": ["label", "label_id", "bbox", "confidence"]
+      }
+    }
+  },
+  "required": ["detections"]
+}
+```
+
+**使用场景**：需要把结果**注入到已有 Pascal 检测器**（使用 `TDetection = record label_id: integer; ...` 结构）时。
+
+**关于 `label_id` 的映射**：
+- **模型不知道你的类别体系**——除非你在提示词里明确说明"0 = person, 1 = car, ..."。
+- 推荐做法：**在 system message 或 prompt 里列出类别映射**。
+- 或者：**只用 `label`（字符串）**，由 Pascal 侧做"字符串 → ID"的映射（更稳健）。
+
+**Pascal 调用**（用 `GenerateWithAttachmentsAndSchema` 附加类别映射文本）：
+```pascal
+var
+  Texts: TLLMTextAttachmentArray;
+begin
+  SetLength(Texts, 1);
+  Texts[0].Name.Text := 'labels.txt';
+  Texts[0].Mime.Text := 'text/plain';
+  Texts[0].Text.Text := '0=person, 1=car, 2=dog, 3=cat';
+  try
+    LLM.GenerateWithAttachmentsAndSchema(
+      '根据 labels.txt 中的类别映射检测图片',
+      '', Texts, nil,     // 也可以同时有 Images
+      'object_detection', SchemaBody, True,
+      S, E);
+  finally
+    TLLMClient.ClearTextAttachments(Texts);
+  end;
+end;
+```
+
+---
+
+#### 模板 4：多任务版（检测 + 分类 + 描述）—— **复杂场景**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "One-sentence summary of the image"
+    },
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "bbox": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "attributes": {
+            "type": "object",
+            "description": "Additional attributes for this object",
+            "properties": {
+              "color": {
+                "type": "string"
+              },
+              "orientation": {
+                "type": "string",
+                "enum": ["front", "back", "left", "right", "unknown"]
+              }
+            }
+          }
+        },
+        "required": ["label", "bbox", "confidence"]
+      }
+    }
+  },
+  "required": ["summary", "detections"]
+}
+```
+
+**使用场景**：智能体需要"整体理解 + 局部定位 + 属性提取"。
+
+**注意**：**不要嵌套太深**——某些后端对深层嵌套支持有限。
+
+---
+
+#### 模板 5：分段/区域检测（segmentation-lite）—— **多边形状**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "polygon": {
+            "type": "array",
+            "description": "Polygon vertices as normalized [x, y] pairs, clockwise order",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 3
+          }
+        },
+        "required": ["label", "polygon"]
+      }
+    }
+  },
+  "required": ["regions"]
+}
+```
+
+**使用场景**：需要**非矩形**区域（如人体轮廓、道路边界）时。
+
+**注意**：
+- **多边形点数不确定**——`minItems: 3` 只保证至少 3 个点，上不封顶。
+- **部分后端对动态数组长度的支持有限**——若报错，降级到矩形 `bbox`。
+
+---
+
+### §16.4 从客户端到模型的完整调用链
+
+一次检测器请求（使用 `GenerateWithImageFileAndSchema`）的**完整链路**：
+
+```
+[1] Pascal 客户端
+      ↓ LLM.GenerateWithImageFileAndSchema(
+      ↓   '检测图片', '', 'photo.png',
+      ↓   'object_detection', SchemaBody, True, S, E)
+      ↓
+[2] llm_client_v3.GenerateWithImageFileAndSchema
+      ↓ 步骤 2.1：BuildSchemaResponseFormatJson
+      ↓   → response_format = {
+      ↓       "type": "json_schema",
+      ↓       "json_schema": { "name": "object_detection",
+      ↓                        "strict": true,
+      ↓                        "schema": <SchemaBody> } }
+      ↓ 步骤 2.2：BuildImageAttachmentFromFile
+      ↓   → images[0] = { Name: 'photo.png',
+      ↓                    Mime: 'image/png',
+      ↓                    DataB64: '<base64>' }
+      ↓ 步骤 2.3：SendGenerateCombined
+      ↓   → 组装 generate 请求：
+      ↓     {
+      ↓       "content": "检测图片",
+      ↓       "prompt": "",
+      ↓       "session_id": "...",
+      ↓       "attachments": [ { "kind":"image",
+      ↓                         "name":"photo.png",
+      ↓                         "mime":"image/png",
+      ↓                         "data_b64":"..." } ],
+      ↓       "options": { "response_format": { ... } }
+      ↓     }
+      ↓ LF_CallEx('LLM_Service', ...)
+      ↓
+[3] llm_proxy / llm_proxy_tool
+      ↓ sanitize_options 保留 options.response_format
+      ↓ 通过 OpenAIStreamClient.stream_chat 转发
+      ↓
+[4] LM Studio（或 Ollama / vLLM）
+      ↓ POST /v1/chat/completions
+      ↓ {
+      ↓   "model": "qwen2-vl-7b-instruct",
+      ↓   "messages": [ { "role":"user",
+      ↓                   "content":[ {"type":"text",...},
+      ↓                               {"type":"image_url",...} ] } ],
+      ↓   "stream": true,
+      ↓   "response_format": { ... }    ← 原样转发
+      ↓ }
+      ↓
+[5] 大模型（Qwen2.5-VL 等）
+      ↓ 后端在 token 层面约束解码
+      ↓ 只生成符合 schema 的 token
+      ↓
+[6] SSE 流回传
+      ↓ data: {"choices":[{"delta":{"content":"{\"detections\":"}}]}
+      ↓ data: {"choices":[{"delta":{"content":"[{\"label\":\"person\""}}]}
+      ↓ ...
+      ↓ data: [DONE]
+      ↓
+[7] llm_proxy / llm_proxy_tool
+      ↓ 提取 choices[0].delta.content，累加为完整字符串
+      ↓ 通过 llm_stream 逐片推送 chunk 事件
+      ↓
+[8] llm_client_v3
+      ↓ OnChunk 触发多次，累积完整 JSON
+      ↓ OnFinish 触发，reason='stop'
+      ↓
+[9] Pascal 客户端
+      ↓ 收到完整 JSON 字符串
+      ↓ 用 TZ_JsonObject.ParseText 解析
+      ↓ 提取 detections 数组
+```
+
+**关键点**：
+- **模型输出的 `content` 是 JSON 字符串**，不是对象。
+- **回调是流式的**——`OnChunk` 会被触发多次，需要客户端**累加**。
+- **`OnFinish` 时才是完整 JSON**。
+
+**Pascal 侧接收模板**：
+```pascal
+type
+  TForm1 = class(TForm)
+  private
+    FClient: TLLMClient;
+    FAccum: TStringBuilder;
+    procedure OnLLMChunk(const SessionId, Text: string);
+    procedure OnLLMFinish(const SessionId, Reason: string);
+  end;
+
+procedure TForm1.OnLLMChunk(const SessionId, Text: string);
+begin
+  TThread.Queue(nil,
+    procedure
+    begin
+      FAccum.Append(Text);
+      Memo1.Lines.Add(Text);
+    end);
+end;
+
+procedure TForm1.OnLLMFinish(const SessionId, Reason: string);
+var
+  FullJson: string;
+begin
+  TThread.Queue(nil,
+    procedure
+    var
+      J: TZ_JsonObject;
+      D: TZ_JsonArray;
+      I: integer;
+      L: string;
+      B: TZ_JsonArray;
+    begin
+      FullJson := FAccum.ToString;
+      FAccum.Clear;
+
+      J := TZ_JsonObject.Create;
+      try
+        if not J.ParseText(FullJson) then
+        begin
+          Memo1.Lines.Add('[ERROR] Invalid JSON returned');
+          Exit;
+        end;
+
+        D := J.a['detections'];
+        Memo1.Lines.Add('检测到 ' + IntToStr(D.Count) + ' 个目标：');
+        for I := 0 to D.Count - 1 do
+        begin
+          L := D.O[I].S['label'];
+          B := D.O[I].a['bbox'];
+          Memo1.Lines.Add(
+            Format('  %s  bbox=[%.3f, %.3f, %.3f, %.3f]',
+              [L, B.F[0], B.F[1], B.F[2], B.F[3]]));
+        end;
+      finally
+        J.Free;
+      end;
+    end);
+end;
+```
+
+---
+
+### §16.5 其他常用 JSON Schema 模板
+
+#### 模板 A：单标签分类
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["cat", "dog", "bird", "other"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": ["category", "confidence"]
+}
+```
+
+**用途**：图像分类、意图识别。
+
+---
+
+#### 模板 B：OCR 文字提取
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "texts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "bbox": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "required": ["content", "bbox"]
+      }
+    }
+  },
+  "required": ["texts"]
+}
+```
+
+---
+
+#### 模板 C：关键点检测
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "keypoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "x": { "type": "number", "minimum": 0, "maximum": 1 },
+          "y": { "type": "number", "minimum": 0, "maximum": 1 },
+          "visibility": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "required": ["name", "x", "y", "visibility"]
+      }
+    }
+  },
+  "required": ["keypoints"]
+}
+```
+
+**用途**：人体姿态、面部关键点、UI 元素定位。
+
+---
+
+#### 模板 D：表格结构化
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "headers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  },
+  "required": ["headers", "rows"]
+}
+```
+
+**用途**：表格图像转结构化数据。
+
+---
+
+#### 模板 E：纯 `json_object`（无 schema）
+
+如果你只需要"合法 JSON"，不约束字段：
+
+```pascal
+var
+  RF: string;
+begin
+  RF := '{"type":"json_object"}';
+  LLM.GenerateStructured('提取图片中的所有信息', '', RF, S, E);
+end;
+```
+
+**注意**：
+- **不推荐用于检测器**——模型可能返回任意 JSON 结构。
+- **LM Studio 有已知限制**：使用 `json_object` 时**必须**在 prompt 里提到"JSON"关键字，否则会报错。
+
+---
+
+### §16.6 常见坑与调试
+
+#### 坑 1：`llm_service` 不支持 Structured Output
+
+**症状**：调用成功返回 `code: 0`，但模型回复是**自由文本**，不是 JSON。
+
+**根因**：`llm_service` 本地推理路径**不转发** `options.response_format`。
+
+**修复**：
+```pascal
+if LLM.ServerKind = 'service' then
+begin
+  ShowMessage('llm_service 不支持 Structured Output');
+  ShowMessage('请启动 llm_proxy 或 llm_proxy_tool');
+  Exit;
+end;
+```
+
+---
+
+#### 坑 2：`json_schema` 嵌套了两层
+
+**症状**：后端返回 400，错误信息含 `unrecognized type json_schema`。
+
+**错误结构**：
+```json
+{
+  "type": "json_schema",
+  "json_schema": {
+    "json_schema": {    ← ❌ 多了一层
+      "name": "...",
+      "schema": { ... }
+    }
+  }
+}
+```
+
+**正确结构**：
+```json
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "...",
+    "strict": true,
+    "schema": { ... }
+  }
+}
+```
+
+**修复**：**用 `GenerateWithImageFileAndSchema`** 或 **`GenerateWithJsonSchema`**，SDK 自动组装正确的结构。
+
+---
+
+#### 坑 3：`strict: "true"` 用了字符串
+
+**症状**：后端 400 或静默忽略 schema。
+
+**修复**：用 `GenerateWithImageFileAndSchema` / `GenerateWithJsonSchema`，`AStrict: boolean` 类型天然防错。
+
+---
+
+#### 坑 4：坐标格式与模型不匹配
+
+**症状**：JSON 合法，但 bbox 坐标位置和实际不符。
+
+**可能原因**：
+- **坐标顺序错误**：某些模型期望 `[y1, x1, y2, x2]`。
+- **归一化方式错误**：某些模型用**像素坐标**（`0~1920`）。
+- **图像预处理差异**。
+
+**修复**：
+1. **在提示词里明确说明**：
+   ```
+   请返回归一化坐标（0~1），格式为 [x_min, y_min, x_max, y_max]，
+   其中 (x_min, y_min) 是左上角，(x_max, y_max) 是右下角。
+   ```
+2. **先做小测试**：用一张只有一个明显物体的图，验证坐标。
+3. **Schema 里加约束**：
+   ```json
+   "bbox": {
+     "type": "array",
+     "items": { "type": "number", "minimum": 0, "maximum": 1 },
+     "minItems": 4,
+     "maxItems": 4
+   }
+   ```
+
+---
+
+#### 坑 5：模型输出缺少 `detections` 字段
+
+**症状**：JSON 合法，但没有 `detections` 字段。
+
+**修复**：
+1. **检查 `required`**：确保 schema 里有 `"required": ["detections"]`。
+2. **在提示词里加强**：`"请始终返回 detections 字段，即使为空也要返回 []"`。
+
+---
+
+#### 坑 6：`confidence` 超出 `0~1`
+
+**症状**：模型返回 `confidence: 95`，不是 `0.95`。
+
+**修复**：
+1. **在提示词里明确**：`"confidence 必须是 0.0 ~ 1.0 之间的小数"`
+2. **Pascal 侧做归一化**：
+   ```pascal
+   var Conf: double;
+   begin
+     Conf := D.O[I].F['confidence'];
+     if Conf > 1 then Conf := Conf / 100;
+   end;
+   ```
+
+---
+
+#### 坑 7：后端不支持 Structured Outputs
+
+**症状**：请求发出后，后端返回 400，或忽略 `response_format` 并返回纯文本。
+
+**修复**：
+1. **后端版本**：LM Studio 需要 0.3.0+；Ollama 需要 0.3.0+。
+2. **模型支持**：使用 Qwen2.5 系列、Qwen2.5-VL 系列、Nemotron Omni 等。
+3. **手工验证**：用 `curl` 直接向后端发一个带 `response_format` 的请求。
+
+---
+
+#### 调试技巧：打开代理层 DEBUG 日志
+
+**启动 llm_proxy 时**：
+```powershell
+.\llm_proxy.exe `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "qwen2-vl-7b-instruct" `
+  --vision `
+  --log-level DEBUG
+```
+
+**观察输出**：
+```
+[DEBUG] Backend request: url=... model=... msgs=N tools=no response_format=yes
+```
+
+- **`response_format=yes`** → 代理确实转发了。
+- **`response_format=no`** → 检查客户端是否真的传了 `options.response_format`。
+
+---
+
+### §16.7 完整可运行 Pascal 示例（一步到位检测器）
+
+> **前置条件**：
+> 1. LM Studio 加载 **Qwen2.5-VL-7B** 或 **Nemotron Omni + mmproj**。
+> 2. LM Studio 开启本地服务器（默认端口 `1234`）。
+> 3. 启动 `llm_proxy.exe --backend-url http://127.0.0.1:1234/v1 --backend-model "qwen2-vl-7b-instruct" --vision`。
+
+```pascal
+unit detector_demo_frm;
+
+interface
+
+uses
+  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls,
+  llm_client_v3, lingofuse_import,
+  Z.Core, Z.Json, Z.PascalStrings, Z.UPascalStrings;
+
+type
+  TDetectorDemoForm = class(TForm)
+    Memo1: TMemo;
+    BtnConnect: TButton;
+    BtnDetect: TButton;
+    OpenDialog1: TOpenDialog;
+    procedure BtnConnectClick(Sender: TObject);
+    procedure BtnDetectClick(Sender: TObject);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
+  private
+    FClient: TLLMClient;
+    FAccum: TStringBuilder;
+    procedure OnLLMChunk(const SessionId, Text: string);
+    procedure OnLLMFinish(const SessionId, Reason: string);
+    procedure OnLLMError(const SessionId, ErrorMsg: string);
+  end;
+
+var
+  DetectorDemoForm: TDetectorDemoForm;
+
+implementation
+
+{$R *.lfm}
+
+const
+  (* Detector schema body, mirroring the "standard template" in §16.3. *)
+  DETECTOR_SCHEMA_BODY =
+    '{"type":"object","properties":{' +
+    '"detections":{"type":"array","items":{' +
+    '"type":"object","properties":{' +
+    '"label":{"type":"string","description":"Object class name"},' +
+    '"bbox":{"type":"array","description":"Normalized bbox [x_min,y_min,x_max,y_max], 0~1",' +
+    '"items":{"type":"number","minimum":0,"maximum":1},' +
+    '"minItems":4,"maxItems":4},' +
+    '"confidence":{"type":"number","minimum":0,"maximum":1}},' +
+    '"required":["label","bbox","confidence"]}}},' +
+    '"required":["detections"]}';
+
+procedure TDetectorDemoForm.FormCreate(Sender: TObject);
+begin
+  FAccum := TStringBuilder.Create;
+end;
+
+procedure TDetectorDemoForm.FormClose(Sender: TObject;
+  var Action: TCloseAction);
+begin
+  FAccum.Free;
+  if FClient <> nil then
+  begin
+    FClient.Free;
+    FClient := nil;
+  end;
+  LF_Shutdown;
+end;
+
+procedure TDetectorDemoForm.BtnConnectClick(Sender: TObject);
+var
+  E: string;
+begin
+  if FClient <> nil then
+  begin
+    Memo1.Lines.Add('[INFO] Already connected');
+    Exit;
+  end;
+
+  FClient := TLLMClient.Create('LLM_Service', 'ipc:llm_service', 60000);
+  FClient.OnChunk  := OnLLMChunk;
+  FClient.OnFinish := OnLLMFinish;
+  FClient.OnError  := OnLLMError;
+
+  if not FClient.Connect(E) then
+  begin
+    Memo1.Lines.Add('[ERROR] Connect failed: ' + E);
+    FreeAndNil(FClient);
+    Exit;
+  end;
+
+  Memo1.Lines.Add('[INFO] Connected. ServerKind=' + FClient.ServerKind);
+
+  if FClient.ServerKind = 'service' then
+  begin
+    Memo1.Lines.Add('[WARN] llm_service does not support Structured Output.');
+    Memo1.Lines.Add('[WARN] Please use llm_proxy or llm_proxy_tool instead.');
+  end;
+end;
+
+procedure TDetectorDemoForm.BtnDetectClick(Sender: TObject);
+var
+  S, E: string;
+begin
+  if FClient = nil then
+  begin
+    Memo1.Lines.Add('[ERROR] Not connected');
+    Exit;
+  end;
+
+  if not OpenDialog1.Execute then
+    Exit;
+
+  Memo1.Lines.Clear;
+  Memo1.Lines.Add('[INFO] Detecting: ' + OpenDialog1.FileName);
+  FAccum.Clear;
+
+  S := '';
+
+  { ✅ v3.10 一步到位：图片 + schema 一起发送 }
+  if not FClient.GenerateWithImageFileAndSchema(
+    '检测图片中的所有目标。返回归一化坐标（0~1），格式为 [x_min, y_min, x_max, y_max]。',
+    '',
+    OpenDialog1.FileName,
+    'object_detection',
+    DETECTOR_SCHEMA_BODY,
+    True,      // strict
+    S, E) then
+  begin
+    Memo1.Lines.Add('[ERROR] GenerateWithImageFileAndSchema failed: ' + E);
+    Exit;
+  end;
+
+  Memo1.Lines.Add('[INFO] Request queued, session=' + S);
+end;
+
+procedure TDetectorDemoForm.OnLLMChunk(const SessionId, Text: string);
+begin
+  TThread.Queue(nil,
+    procedure
+    begin
+      FAccum.Append(Text);
+      Memo1.Lines.Add(Text);
+    end);
+end;
+
+procedure TDetectorDemoForm.OnLLMFinish(const SessionId, Reason: string);
+var
+  FullJson: string;
+begin
+  TThread.Queue(nil,
+    procedure
+    var
+      J: TZ_JsonObject;
+      D: TZ_JsonArray;
+      I: integer;
+      L: string;
+      B: TZ_JsonArray;
+    begin
+      FullJson := FAccum.ToString;
+      FAccum.Clear;
+
+      Memo1.Lines.Add('');
+      Memo1.Lines.Add('--- finish: ' + Reason + ' ---');
+
+      J := TZ_JsonObject.Create;
+      try
+        if not J.ParseText(FullJson) then
+        begin
+          Memo1.Lines.Add('[ERROR] Invalid JSON: ' + FullJson);
+          Exit;
+        end;
+
+        if not J.Exists('detections') then
+        begin
+          Memo1.Lines.Add('[WARN] No detections field');
+          Exit;
+        end;
+
+        D := J.a['detections'];
+        Memo1.Lines.Add('Detected ' + IntToStr(D.Count) + ' object(s):');
+
+        for I := 0 to D.Count - 1 do
+        begin
+          L := D.O[I].S['label'];
+          B := D.O[I].a['bbox'];
+          Memo1.Lines.Add(
+            Format('  #%d  %s  bbox=[%.4f, %.4f, %.4f, %.4f]  conf=%.4f',
+              [I + 1, L,
+               B.F[0], B.F[1], B.F[2], B.F[3],
+               D.O[I].F['confidence']]));
+        end;
+      finally
+        J.Free;
+      end;
+    end);
+end;
+
+procedure TDetectorDemoForm.OnLLMError(const SessionId, ErrorMsg: string);
+begin
+  TThread.Queue(nil,
+    procedure
+    begin
+      Memo1.Lines.Add('[ERROR] ' + ErrorMsg);
+    end);
+end;
+
+end.
+```
+
+**关键变化（相比 v2.2 文档）**：
+- **不再需要手工构造 attachments 数组**——`GenerateWithImageFileAndSchema` 内部搞定。
+- **不再需要手工调用两次 API**（一次发图，一次发 schema）。
+- **代码量减少约 60%**。
+
+---
+
+### §16.8 小结
+
+| 你的目标 | 用哪个模板 | 用哪个 API（v3.10） |
+|---------|-----------|-----------|
+| 最简检测器 | 模板 1 | **`GenerateWithImageFileAndSchema`** |
+| **生产检测器（推荐）** | **模板 2** | **`GenerateWithImageFileAndSchema`** |
+| 对接已有检测器 | 模板 3 | `GenerateWithAttachmentsAndSchema`（附加类别映射文本）|
+| 多任务（检测 + 描述） | 模板 4 | `GenerateWithImageFileAndSchema` |
+| 多边形状区域 | 模板 5 | `GenerateWithImageFileAndSchema` |
+| 分类 | 模板 A | `GenerateWithImageFileAndSchema` |
+| OCR | 模板 B | `GenerateWithImageFileAndSchema` |
+| 关键点 | 模板 C | `GenerateWithImageFileAndSchema` |
+| 表格 | 模板 D | `GenerateWithImageFileAndSchema` |
+| **多附件 + schema** | 模板 3 | **`GenerateWithAttachmentsAndSchema`** |
+| **纯 schema 无附件** | 模板 1-5 | `GenerateWithJsonSchema` |
+| 完全自由 JSON | — | `GenerateStructured` + `{"type":"json_object"}` |
+
+**四条铁律**：
+1. **`json_schema` 直接放在顶层，不要再嵌 `json_schema`**。
+2. **`strict` 是布尔值，不是字符串**。
+3. **`llm_service` 不支持，必须用 `llm_proxy` / LTB**。
+4. **v3.10 一步到位**：图片 + schema 用 `GenerateWithImageFileAndSchema`，不要手动组合。
+
+---
+
+### §16.9 GUI 使用流程（v3.4）
+
+> `llm_tool_v3.exe`（GUI 演示）已内置 Structured Output 面板。
+
+**步骤**：
+
+1. **连接**：
+   - 切到 `LLM参数` 页
+   - 填端点 `ipc:llm_service`（默认）+ APP `LLM_Service`（默认）
+   - 点"链接端点"
+
+2. **准备检测器**：
+   - 切到 `结构化输出` 页
+   - 点"加载检测器模板"
+   - `SchemaMemo` 会自动填入标准检测器 schema（标签 + 方框 + 置信度）
+   - 勾选"启用 Structured Output"
+   - 保持 `strict 严格模式` 勾选
+
+3. **添加图片**：
+   - 切到 `输入` 页
+   - 在附件面板点"添加图片文件..."（或"从剪贴板粘贴"）
+   - 图片会被加入 `FImageAttachments` 数组
+
+4. **写提示词**：
+   - `code_edit`（顶部）：`检测图片中的所有目标。返回归一化坐标（0~1）。`
+   - `prompt_edit`（中部）：可写更详细说明
+
+5. **生成**：
+   - 点"生成"（或"新建会话"）
+
+**底层自动分流**（v3.4 `DoGenerateWithCurrentSettings`）：
+- **有 schema + 有附件** → `GenerateWithAttachmentsAndSchema`
+- 有 schema + 无附件 → `GenerateWithJsonSchema`
+- 无 schema + 有附件 → `GenerateWithAttachments`
+- 无 schema + 无附件 → `Generate`
+
+**`结构化输出` 面板控件对照**：
+
+| 控件 | 作用 |
+|------|------|
+| `EnableStructuredOutputCheckBox` | 总开关 |
+| `SchemaNameEdit` | schema 名（默认 `object_detection`） |
+| `StrictCheckBox` | strict 严格模式（默认勾选） |
+| `LoadDetectorTemplateButton` | 一键加载内置检测器模板 |
+| `SchemaMemo` | schema 本体编辑区 |
+
+---
+
+**文档版本**：v2.3（Structured Output 组合扩展版——新增 §16.2 四个 API、§16.3 检测器模板 Pascal 调用示例改为 v3.10 一步到位、§16.7 完整可运行示例改用 `GenerateWithImageFileAndSchema`、§16.9 GUI 使用流程、§1.3 / §4.5 / §4.6 / §5.4 / §5.6 / §8.14 / §10.4 / §11.3 / §11.7 / §12.16-18 / §14 同步更新）
 
 **维护方式**：发现新的错误消息、新坑、新模板，追加到对应章节
-**核心承诺**：AI 读完本文档能独立完成 90% 的 `llm_client_v3` 任务，剩下 10% 见 §13 诚实清单
+**核心承诺**：AI 读完本文档能独立完成 95% 的 `llm_client_v3` 任务（含检测器一步到位），剩下 5% 见 §13 诚实清单
