@@ -1,7 +1,7 @@
 # Pascal Integration Guide — 按场景切入 pasAgent v3
 
 > **文档名**：`Pascal_Integration_Guide.md`
-> **文档版本**：V4.0（场景化重构版）
+> **文档版本**：V4.1（场景化重构版）
 > **最后更新**：2026-09-17
 > **核心价值**：**用 Pascal 写代码，让 AI 像调用本地函数一样调用你的函数；一次开发，接入 250+ 外部平台**
 > **同目录相关文档**：
@@ -14,6 +14,7 @@
 > - 兼容清单：[`src/LingoFuse_LLM_Proxy_Compatibility_Guide.md`](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md)
 > - 踩坑大全：[`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md)
 > - HTTP 桥接：[`src/lingofuse/Bridge_User_Guide.md`](src/lingofuse/Bridge_User_Guide.md)
+> - SDK 文档：[`src/llm_client_v3.md`](src/llm_client_v3.md)
 
 ---
 
@@ -25,7 +26,7 @@
 
 | # | 事实 | 含义 |
 |:-:|------|------|
-| **1** | **`llm_client.pas` 是 Pascal 标准客户端 SDK** | Pascal 程序通过它连接 LLM 生态，**代码一次开发，无需为换后端改代码** |
+| **1** | **`src/llm_client_v3.pas` 是 Pascal 标准客户端 SDK** | Pascal 程序通过它连接 LLM 生态，**代码一次开发，无需为换后端改代码** |
 | **2** | **通过代理转发，可对接 250+ 外部平台** | LM Studio / Ollama / DeepSeek / OpenRouter / 智谱 / Moonshot / vLLM / … |
 | **3** | **客户端代码不需要任何 MCP 知识** | 工具调用由服务端代管（路径 B），Pascal 程序只发 `generate` |
 
@@ -66,10 +67,10 @@ flowchart TB
 
 | 你的项目 | 推荐章节 | 推荐路径 |
 |---------|:--------:|---------|
-| **FPC / Lazarus 新建项目** | 场景 A | 原生 SDK |
+| **FPC / Lazarus 新建项目** | 场景 A | 原生 SDK（`llm_client_v3`） |
 | **Delphi 老项目** | 场景 B | 原生 SDK（最小化改动） |
 | **手机 / 跨平台 / Web** | 场景 C | HTTP Bridge（`bridge.py`） |
-| **需要调试 UI 的工具** | 场景 D | 原生 SDK + GUI 集成 |
+| **需要调试 UI 的工具** | 场景 D | 原生 SDK + GUI 集成（参考 `llm_tool_v3`） |
 | **商业部署** | 场景 E | 原生 SDK（+ 生产加固） |
 | **工业自动化** | 场景 F | 原生 SDK + 信标工具 |
 
@@ -86,7 +87,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph PAS["🅿️ 你的 Pascal 程序"]
-        C["llm_client.pas"]
+        C["llm_client_v3.pas"]
     end
 
     subgraph PROXY["🔀 代理服务（只换参数）"]
@@ -153,8 +154,7 @@ flowchart LR
     subgraph PathC["🅲 路径 C：本地推理"]
         C1["llm_service"]
         C2["完全离线场景"]
-        C3["不支持多模态"]
-
+        C3["纯文本（不支持多模态）"]
     end
 
     style PathA fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#5A1A14
@@ -170,28 +170,38 @@ flowchart LR
 
 ---
 
-## 第 2 章 · 核心 SDK：`llm_client.pas`
+## 第 2 章 · 核心 SDK：`llm_client_v3.pas`
 
 > ⭐ **本章是六大场景的公共基础**。任何场景下，你都会用到本章的 SDK。
 
 ### 2.1 SDK 位置与获取
 
-> **`llm_client.pas` 属于 LingoFuse 核心仓库**，不在本仓库（`LingoFuse-pasAgent-v3`）中。
+> **`llm_client_v3.pas` 位于本仓库 `src\` 目录下**，随项目一起分发。
 
-**获取方式**：
+**文件位置**：
 
-```bash
-git clone --recursive https://github.com/PassByYou888/LingoFuse.git
+```
+<项目根>\src\llm_client_v3.pas     ← SDK 单元
+<项目根>\src\llm_client_v3.md      ← SDK 文档（面向 AI / 开发者）
+<项目根>\src\llm_tool_v3.lpr/.lpi  ← GUI 演示客户端
+<项目根>\src\llm_tool_v3_frm.pas/.lfm
+<项目根>\src\lingofuse_import.pas  ← LingoFuse 底层绑定
+<项目根>\src\lingofuse_helper.pas  ← 工具辅助
 ```
 
-在核心仓库中搜索 `llm_client.pas`。
+**如果你的项目不在本仓库内**，把下面这些文件复制到你的项目搜索路径：
+
+- `llm_client_v3.pas`
+- `lingofuse_import.pas`
+- `lingofuse_helper.pas`（如果你要写工具提供者）
+- `zCore\`（Z 框架，`git submodule` 拉取）
 
 ### 2.2 SDK 角色
 
 ```mermaid
 flowchart LR
     subgraph Pascal["🅿️ 你的 Pascal 程序"]
-        C["TLLMClient<br/>llm_client.pas"]
+        C["TLLMClient<br/>llm_client_v3.pas"]
     end
 
     subgraph Server["🎯 LLM 服务（三种之一）"]
@@ -215,14 +225,14 @@ flowchart LR
     style Backend fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
 ```
 
-**`llm_client.pas` 的角色**：Pascal 程序与 LingoFuse LLM 服务对话的**标准协议客户端**。它**不走 OpenAI 协议**，而是走 LingoFuse 二进制 RPC——**OpenAI 兼容性由服务端负责对外**。
+**`llm_client_v3.pas` 的角色**：Pascal 程序与 LingoFuse LLM 服务对话的**标准协议客户端**。它**不走 OpenAI 协议**，而是走 LingoFuse 二进制 RPC——**OpenAI 兼容性由服务端负责对外**。
 
 ### 2.3 为什么只有 Pascal 版本？
 
-> **Python 没有 `llm_client` 的对应物。**
+> **Python 没有 `llm_client_v3` 的对应物。**
 
 - **Python 天生就能接入智能体生态**——LangChain、LlamaIndex、OpenAI SDK 都是 Python 原生，直接用即可，**不需要绕道 LingoFuse**。
-- **Pascal 生态缺乏这样的基础设施**——所以 pasAgent 为 Pascal 提供了 `llm_client.pas`。
+- **Pascal 生态缺乏这样的基础设施**——所以 pasAgent 为 Pascal 提供了 `llm_client_v3.pas`。
 
 ### 2.4 API 速览
 
@@ -236,6 +246,8 @@ flowchart LR
 | **服务端设置** | `SetSystemMessage` / `Health` | 全局设置与健康检查 |
 | **能力发现** | `GetAPICapabilities` / `HasCapabilityInfo` / `LLMSupported` / `IsToolBridge` / `HasVision` / `HasAttachments` | 运行时查询服务端能力 |
 | **附件释放** | `ClearTextAttachments` / `ClearImageAttachments` | 显式释放附件数组 |
+
+> 📖 **完整的 API 参考、错误消息索引、升级模板**：见 [`src/llm_client_v3.md`](src/llm_client_v3.md)。
 
 ### 2.5 最小客户端示例
 
@@ -270,7 +282,7 @@ begin
   ReadLn;
   LLM.Disconnect;
   LLM.Free;
-end;
+end.
 ```
 
 ### 2.6 事件回调
@@ -295,6 +307,28 @@ end;
 | `ServerKind` | `string` | 读 | `'service'` / `'proxy'` |
 | `CapabilitiesRawJson` | `TZ_JsonString` | 读 | 能力矩阵原始 JSON |
 | `LastException` | `string` | 读 | 通知线程最后捕获的异常 |
+
+### 2.8 GUI 演示客户端：`llm_tool_v3`
+
+`llm_tool_v3.lpi` 是 **SDK 的官方 GUI 演示程序**，展示以下能力的完整用法：
+
+| 能力 | 演示位置 |
+|------|---------|
+| 连接 / 断开 / 重连 | `conn_Button` / `disconn_Button` |
+| 多会话管理 | `new_session_Button` / `session_ListBox` |
+| 流式输出（chunk + think） | `sse_Edit`（SynEdit）+ 独立 think 面板 |
+| 多模态附件发送 | `attachment panel`（文本 + 图片） |
+| 能力矩阵查询 | 启动时自动拉取 + 状态栏显示 |
+| 系统提示词 | `sys_prompt_Memo`（配合 `new_session_Button` 生效） |
+
+**编译方式**：
+
+```cmd
+cd <项目根>\src
+lazbuild.exe -B .\llm_tool_v3.lpi
+```
+
+**学习建议**：先跑通 `llm_tool_v3` 的编译，通读 `llm_tool_v3_frm.pas` 源码，再动手写自己的客户端。
 
 ---
 
@@ -323,10 +357,10 @@ end;
 MyIndustrialApp/
 ├── src/
 │   ├── main.lpr              # 主程序
-│   ├── llm_module.pas        # LLM 集成模块（使用 llm_client.pas）
+│   ├── llm_module.pas        # LLM 集成模块（使用 llm_client_v3.pas）
 │   └── ui/                    # UI 单元
 ├── vendor/
-│   ├── llm_client_v3.pas     # 从 LingoFuse 核心仓库获取
+│   ├── llm_client_v3.pas     # 从本仓库 src\ 复制
 │   ├── lingofuse_import.pas
 │   ├── lingofuse_helper.pas
 │   └── zCore/                 # Z 框架源码
@@ -346,9 +380,9 @@ MyIndustrialApp/
   --mcp-reg-agent-app llm_proxy_agent
 ```
 
-**第 2 步：集成 `llm_client.pas`**
+**第 2 步：集成 `llm_client_v3.pas`**
 
-把 `llm_client_v3.pas` + `lingofuse_import.pas` + `zCore/` 加入 Lazarus 项目搜索路径。
+把 `llm_client_v3.pas` + `lingofuse_import.pas` + `lingofuse_helper.pas` + `zCore/` 加入 Lazarus 项目搜索路径。
 
 **第 3 步：写一个 LLM 集成单元**
 
@@ -608,7 +642,7 @@ flowchart LR
     style C fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
 ```
 
-**共享同一后端**——Delphi 用 `llm_client.pas`，Python 用 OpenAI SDK，二者**可以共存**。
+**共享同一后端**——Delphi 用 `llm_client_v3.pas`，Python 用 OpenAI SDK，二者**可以共存**。
 
 ### 4.6 注意事项
 
@@ -795,6 +829,7 @@ fetch('http://192.168.1.100:8081/my_calculator/add', {
 | **核心诉求** | **调试 UI 好用** + **实时反馈** |
 | **推荐路径** | **路径 B** + **原生 SDK** |
 | **特色** | 流式回调 + 多轮对话 + 会话管理 |
+| **参考实现** | **`llm_tool_v3`**（本仓库 GUI 演示客户端） |
 
 ### 6.2 为什么 Pascal GUI 工具用 pasAgent
 
@@ -817,7 +852,27 @@ flowchart TB
     style E1 fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
 ```
 
-### 6.3 关键设计模式
+### 6.3 学习起点：先跑通 `llm_tool_v3`
+
+在动手写自己的 GUI 之前，**先编译并运行官方演示 `llm_tool_v3`**：
+
+```cmd
+cd <项目根>\src
+lazbuild.exe -B .\llm_tool_v3.lpi
+.\llm_tool_v3.exe
+```
+
+它展示了所有关键模式的**可运行实现**，是最快的上手法：
+
+- 连接 / 断开 / 重连
+- 多会话切换
+- 流式输出（正文 + 思考）
+- 多模态附件
+- 系统提示词生效路径
+
+**源码**：`src\llm_tool_v3_frm.pas`。
+
+### 6.4 关键设计模式
 
 **模式 1：会话隔离**
 
@@ -877,7 +932,7 @@ type
   end;
 ```
 
-### 6.4 调试 UI 推荐配置
+### 6.5 调试 UI 推荐配置
 
 | 组件 | 用途 |
 |------|------|
@@ -887,7 +942,7 @@ type
 | **attachment panel** | 附件管理（文本 / 图片） |
 | **sysTimer** | 驱动 `LF_Sync`（周期 30ms） |
 
-### 6.5 关键实现
+### 6.6 关键实现
 
 **Timer 驱动软同步**：
 
@@ -908,7 +963,7 @@ sysTimer.Interval := 30;  // 30ms
 sysTimer.Enabled := True;
 ```
 
-### 6.6 多模态支持（可选）
+### 6.7 多模态支持（可选）
 
 若后端为 VLM：
 
@@ -924,10 +979,13 @@ begin
 end;
 ```
 
-### 6.7 相关文档
+> ⚠️ **`llm_service` 不支持多模态**。要走多模态，请连接 `llm_proxy` / `llm_proxy_tool`，后端加载 VLM。
+
+### 6.8 相关文档
 
 - LTB 手册：[`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)
 - 踩坑 P4 系列：[`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md)
+- SDK 文档：[`src/llm_client_v3.md`](src/llm_client_v3.md)
 
 ---
 
@@ -1097,7 +1155,7 @@ flowchart TB
     end
 
     subgraph Edge["💻 边缘计算"]
-        E1["FPC 上位机<br/>llm_client.pas"]
+        E1["FPC 上位机<br/>llm_client_v3.pas"]
         E2["llm_proxy_tool<br/>本地推理"]
         E3["pascal_agent_api<br/>工具提供者"]
     end
@@ -1213,8 +1271,8 @@ LLM.Generate('读取 PLC 寄存器 100 的值', '', sid, err);
 
 | 组件 | Delphi 7+ | Delphi 2009+ | FPC 3.0+ | Lazarus 4.8 |
 |------|:---------:|:------------:|:--------:|:-----------:|
-| `llm_client.pas` | ⚠️ | ✅ | ✅ | ✅ |
-| `llm_tool_frm.pas` | ⚠️ | ✅ | ✅ | ✅ |
+| `llm_client_v3.pas` | ⚠️ | ✅ | ✅ | ✅ |
+| `llm_tool_v3_frm.pas` | ⚠️ | ✅ | ✅ | ✅ |
 
 > **说明**：
 > - ⚠️ Delphi 7 可编译，但 Unicode / 泛型等特性需要条件编译分支
@@ -1259,7 +1317,7 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 
 ### Q1：我是 Delphi 用户，能用吗？
 
-> ✅ **能**。`llm_client.pas` 同时兼容 Delphi 7+ 和 FPC 3.0+。
+> ✅ **能**。`llm_client_v3.pas` 同时兼容 Delphi 7+ 和 FPC 3.0+。
 
 ### Q2：我的 Pascal 函数有复杂参数类型怎么办？
 
@@ -1267,13 +1325,15 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 >
 > 若你要把 Pascal 函数暴露为工具，需要遵守声明规范（复杂类型会被跳过）。若你只是用 Pascal 客户端**调用** AI，则**没有任何类型限制**。
 
-### Q3：`llm_client.pas` 在哪里下载？
+### Q3：`llm_client_v3.pas` 在哪里下载？
 
-> **在 LingoFuse 核心仓库**：
-> ```bash
-> git clone --recursive https://github.com/PassByYou888/LingoFuse.git
-> ```
-> 搜索 `llm_client.pas`。
+> **就在本仓库 `src\` 目录下**，随项目一起分发。
+>
+> 如果你的项目不在本仓库内，直接复制以下文件到你的项目搜索路径：
+> - `src\llm_client_v3.pas`
+> - `src\lingofuse_import.pas`
+> - `src\lingofuse_helper.pas`（写工具时）
+> - `zCore\`（`git submodule update --init --recursive` 拉取）
 
 ### Q4：如何切换后端？
 
@@ -1302,13 +1362,27 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 
 ### Q9：Pascal 客户端能处理图片吗？
 
-> ✅ **能**——只要后端是 VLM。用 `GenerateWithImageFile` / `GenerateWithAttachments`。
+> ✅ **能**——只要后端是 VLM（通过 `llm_proxy` / `llm_proxy_tool` 转发）。用 `GenerateWithImageFile` / `GenerateWithAttachments`。
+>
+> ⚠️ 注意：**`llm_service` 本身不支持多模态**，请不要把图片发给它。
 
 ### Q10：编译时提示找不到单元怎么办？
 
 > - 确保用 `lazbuild` 编译（**不要直接调 `fpc`**）
 > - 确认 `.lpi` 文件中的单元搜索路径已正确配置
-> - 缺少的单元从 LingoFuse 核心仓库获取
+> - 缺少的单元从 **本仓库 `src\`** 或 **LingoFuse 核心仓库** 获取（视具体单元而定）
+
+### Q11：有没有 GUI 演示可以直接跑？
+
+> ✅ **有**。`src\llm_tool_v3.lpi` 是官方 GUI 演示客户端：
+>
+> ```cmd
+> cd src
+> lazbuild.exe -B .\llm_tool_v3.lpi
+> .\llm_tool_v3.exe
+> ```
+>
+> 它展示连接、多会话、流式输出、多模态附件、系统提示词等全部关键用法。源码：`src\llm_tool_v3_frm.pas`。
 
 ---
 
@@ -1318,9 +1392,12 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 
 | 文档 | 说明 |
 |------|------|
-| [`readme.md`](readme.md) | 项目总览与四大核心组件 |
-| [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
+| [`readme.md`](readme.md) | 项目总览与四大核心应用组件 |
 | [`Build_Guide.md`](Build_Guide.md) | 编译指南 |
+| [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
+| [`code_generate_mcp.md`](code_generate_mcp.md) | 代码生成器使用手册 |
+| [`pascal_code_mcp_rule.md`](pascal_code_mcp_rule.md) | Pascal 声明规范 |
+| [`C_code_mcp_rule.md`](C_code_mcp_rule.md) | C 声明规范 |
 
 ### `src/` 子目录文档
 
@@ -1333,13 +1410,15 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 | [`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全 |
 | [`src/LingoFuse_LLM_Service_CLI_guide.md`](src/LingoFuse_LLM_Service_CLI_guide.md) | 本地推理服务手册 |
 | [`src/LingoFuse_LLM_Service_Work_Summary.md`](src/LingoFuse_LLM_Service_Work_Summary.md) | 版本演进 |
-| [`src/lingofuse/Bridge_User_Guide.md`](src/lingofuse/Bridge_User_Guide.md) | **HTTP 桥接手册** |
+| [`src/llm_client_v3.md`](src/llm_client_v3.md) | **Pascal 客户端 SDK 文档** |
+| [`src/lingofuse/Bridge_User_Guide.md`](src/lingofuse/Bridge_User_Guide.md) | HTTP 桥接手册 |
+| [`src/pascal_agent_api_ref_json.md`](src/pascal_agent_api_ref_json.md) | `agent_main` / `register_agent` JSON 结构详解 |
 
 ### LingoFuse 核心仓库
 
 | 资源 | 说明 |
 |------|------|
-| [LingoFuse 主仓库](https://github.com/PassByYou888/LingoFuse) | `llm_client.pas` 等 Pascal 客户端源码 |
+| [LingoFuse 主仓库](https://github.com/PassByYou888/LingoFuse) | 跨语言 RPC 网格 + 服务发现基础设施 |
 | [zIPC 仓库](https://github.com/PassByYou888/zIPC) | 进程通信组件 |
 
 ---
@@ -1348,7 +1427,7 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 
 > 📌 **三句话记住本文档**：
 
-1. **`llm_client.pas` 是 Pascal 标准客户端 SDK**——位于 LingoFuse 核心仓库。
+1. **`src/llm_client_v3.pas` 是 Pascal 标准客户端 SDK**——**位于本仓库 `src\` 目录**，随项目一起分发。
 2. **一次开发，250+ 平台接入**——Pascal 程序代码不变，只改服务端的 `--backend-url`。
 3. **工具调用客户端零改动**——用 `llm_proxy_tool.exe`（LTB），服务端代管工具调用。
 
@@ -1359,7 +1438,7 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 | **A 新工业项目** | FPC / Lazarus 原生 SDK + 路径 B |
 | **B 老项目维护** | 独立单元 + 最小化侵入 + 渐进引入 |
 | **C 手机 / 跨平台** | HTTP Bridge（`bridge.py`）——任何 HTTP 客户端都能用 |
-| **D 新工具开发** | 原生 SDK + GUI 集成 + 流式回调 |
+| **D 新工具开发** | 原生 SDK + GUI 集成（先跑 `llm_tool_v3` 学套路） |
 | **E 商业部署** | 路径 B + 生产加固（密钥 / 日志 / 上限） |
 | **F 工业自动化** | 路径 B + 本地推理（离线优先） |
 
@@ -1369,6 +1448,6 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 
 ---
 
-**文档版本**：V4.0（按场景重构——新工业 / 老项目 / 手机 / 新工具 / 商业 / 工业自动化）
+**文档版本**：V4.1（场景化重构版——SDK 位置修正为本仓库、`129+` → `250+` 统一、GUI 演示 `llm_tool_v3` 补充、文档索引更新）
 **维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
