@@ -1,7 +1,7 @@
 # LingoFuse LLM Proxy 命令行使用手册
 
 > **适用程序**：`llm_proxy.exe`（Windows）/ `llm_proxy`（Linux）
-> **文档版本**：v4.0（v3 架构重写版）
+> **文档版本**：v4.1（v3 架构重写版 · 多模态参数修正版）
 > **最后更新**：2026-09-17
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
@@ -63,6 +63,7 @@ flowchart TB
         A3["支持 set_system_message"]
         A4["需要模型文件"]
         A5["工具执行：客户端负责"]
+        A6["纯文本（不支持多模态）"]
     end
 
     subgraph B["🟣 llm_proxy"]
@@ -71,6 +72,7 @@ flowchart TB
         B3["不支持 set_system_message"]
         B4["只需一个 OpenAI 兼容后端"]
         B5["工具执行：客户端负责"]
+        B6["多模态：转发到后端（由后端决定）"]
     end
 
     subgraph C["🔴 llm_proxy_tool（LTB）"]
@@ -79,6 +81,7 @@ flowchart TB
         C3["不支持 set_system_message"]
         C4["转发 + 服务端代管工具执行"]
         C5["客户端零改动享受工具"]
+        C6["多模态：转发到后端（由后端决定）"]
     end
 
     style A fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
@@ -98,11 +101,17 @@ flowchart TB
 | **`set_system_message`** | ✅ **1** | ❌ **0** | ❌ **0** |
 | `health` | ✅ 1 | ✅ 1 | ✅ 1 |
 | `llm_stream` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `attachments` | ✅ 1 | ✅ 1 | ✅ 1 |
+| **`vision`** | **0** | **0** | **0** |
 | **`tools`** | — | — | ✅ **1** |
 | **`tool_calls`** | — | — | ✅ **1** |
 | **`tool_results`** | — | — | ✅ **1** |
 | **`server_kind`** | `service` | `proxy` | `proxy` |
 
+> **关于 `vision=0`**：三个服务端的 `vision` 字段**都固定为 0**——表达的是"**服务端自身不做视觉处理**"，而非"整个链路不支持多模态"。`llm_proxy` / LTB 只是**转发者**，图片能否被理解由**后端**决定。
+>
+> **关于 `server_kind`**：`llm_proxy` 与 `llm_proxy_tool` 的 `server_kind` **都是** `"proxy"`。要区分二者，读 `tools` / `tool_calls` 等 LTB 特有字段。
+>
 > **共存规则**：若三者都想运行，**必须**为每个设置不同的 `--endpoint` 和 `--app-name`。详见场景 8。
 
 ---
@@ -159,7 +168,7 @@ flowchart TB
   --backend-model deepseek-chat
 ```
 
-### 图 3：启动后的状态横幅（示例）
+### 图 3：启动后的状态横幅（与源码字段一致）
 
 启动成功后会打印一段状态横幅，然后进入监听状态：
 
@@ -174,17 +183,28 @@ flowchart TB
   Backend URL             : http://127.0.0.1:1234/v1
   Backend model           : (auto-discover)
   Backend auth            : Authorization: Bearer <redacted, 9 chars>
+  Backend extra headers   : (none)
+  Backend timeout (s)     : 300
   Backend transport       : http.client
+  Max history per session : 512
+  Max sessions            : 1024
   Session idle timeout(s) : 1800
   set_system_message      : unsupported (llm_service-only)
-  Multimodal support      : 由后端决定（llm_proxy 会原样转发图片附件）
-  ...
+  Attachments             : enabled (text always, image when --vision)
+  Vision                  : disabled
+  Log level               : INFO
+----------------------------------------------------------------------
   Supported APIs          : generate, create_session, close_session, ...
   Unsupported APIs        : set_system_message
 ======================================================================
 [INFO] LLM Proxy service 'LLM_Service' running on ipc:llm_service
 [INFO] Press Ctrl+C to stop...
 ```
+
+> **注意**：
+> - `Attachments` 行表示"服务端**接受**附件字段"（不会因为附件存在就拒绝请求）。
+> - `Vision` 行表示"服务端**自身是否启用视觉处理**"——`llm_proxy` 固定为 `disabled`，因为它只是转发者。图片能否被理解，由**后端**决定（详见 5.5 节）。
+> - 若启用 `--vision`，`Vision` 行会显示 `enabled`，此时图片附件会被转发到后端（而非被拒绝）。
 
 ---
 
@@ -315,7 +335,7 @@ flowchart TB
 .\llm_proxy.exe --backend-url https://api.x.ai/v1 --backend-key xai-xxx --backend-model grok-2-latest
 ```
 
-> **完整清单**：129+ OpenAI 兼容后端清单见 [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md)。
+> **完整清单**：250+ OpenAI 兼容后端清单见 [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md)。
 
 ### 4.5 密钥安全建议
 
@@ -460,7 +480,7 @@ chmod 600 api_key.txt
 # 明确指定模型
 .\llm_proxy.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 
 # 空值即自动发现
 .\llm_proxy.exe --backend-url http://127.0.0.1:1234/v1
@@ -472,7 +492,7 @@ chmod 600 api_key.txt
 # 明确指定模型
 ./llm_proxy \
   --backend-url http://127.0.0.1:1234/v1 \
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 
 # 空值即自动发现
 ./llm_proxy --backend-url http://127.0.0.1:1234/v1
@@ -711,9 +731,9 @@ chmod 600 api_key.txt
 ./llm_proxy --log-level WARNING
 ```
 
-### 5.5 多模态转发说明
+### 5.5 多模态转发说明（**核心**）
 
-`llm_proxy` 本身**不解析图片内容**，但它会**原样转发**客户端请求中的多模态内容（图片附件）到后端。
+`llm_proxy` 本身**不解析图片内容**——它是一个**纯转发者**。多模态能否工作，由**后端**决定。
 
 | 环节 | 行为 |
 |------|------|
@@ -721,19 +741,33 @@ chmod 600 api_key.txt
 | **`llm_proxy`** | 原样转发 `attachments` 到后端（不做解析） |
 | **后端** | 必须是**支持多模态的 VLM**（如 LM Studio 加载 Qwen2-VL） |
 
-**示例**：
+#### 关键：`--vision` 参数的作用
+
+`llm_proxy` 通过 `--vision` 参数控制**是否允许转发图片附件**：
+
+| `--vision` | 图片附件行为 |
+|:----------:|-------------|
+| **未启用**（默认） | 携带图片附件的请求**被拒绝**（返回 `code: -1`） |
+| **已启用** | 图片附件**原样转发**到后端（由后端决定是否理解） |
+
+> ⚠️ **常见误解**：`--vision` **不**代表"`llm_proxy` 能理解图片"——它只代表"**允许转发图片**"。真正的视觉处理发生在**后端**。
+
+#### 正确用法
 
 ```powershell
 .\llm_proxy.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "qwen2-vl-7b-instruct"
+  --backend-model "qwen2-vl-7b-instruct" `
+  --vision
 ```
 
 **关键点**：
 
-- **后端决定是否支持多模态**——`llm_proxy` 只是转发者
-- **与 LTB 行为一致**——LTB 也原样转发图片附件
-- **与 `llm_service` 不同**——`llm_service` 不支持多模态
+- **必须显式传 `--vision`**，否则图片附件会被拒绝。
+- **`--backend-model` 必须指向 VLM**——若为空，`llm_proxy` 从 `/v1/models` 拉第一个，**可能不是 VLM**。
+- **后端决定是否支持多模态**——`llm_proxy` 只是转发者。
+- **与 LTB 行为一致**——LTB 也原样转发图片附件。
+- **与 `llm_service` 不同**——`llm_service` **不支持多模态**。
 
 ### 5.6 环境变量一览
 
@@ -755,6 +789,7 @@ chmod 600 api_key.txt
 | `LLM_PROXY_MAX_HISTORY` | `--max-history` | `512` |
 | `LLM_PROXY_MAX_SESSIONS` | `--max-sessions` | `1024` |
 | `LLM_PROXY_SESSION_TIMEOUT` | `--session-timeout` | `1800` |
+| **`LLM_PROXY_VISION`** | **`--vision` / `--no-vision`** | **`1` / `0`** |
 | `LLM_PROXY_LOG_LEVEL` | `--log-level` | `INFO` |
 
 **Windows（PowerShell）**：
@@ -787,8 +822,8 @@ export LLM_PROXY_BACKEND_MODEL="deepseek-chat"
 
 ```powershell
 .\llm_proxy.exe `
-  --backend-url http://127.0.0.1:12345/v1 `
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m" `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" `
   --backend-key lm-studio `
   --endpoint ipc:llm_service `
   --app-name LLM_Service `
@@ -799,8 +834,8 @@ export LLM_PROXY_BACKEND_MODEL="deepseek-chat"
 
 ```bash
 ./llm_proxy \
-  --backend-url http://127.0.0.1:12345/v1 \
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m" \
+  --backend-url http://127.0.0.1:1234/v1 \
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" \
   --backend-key lm-studio \
   --endpoint ipc:llm_service \
   --app-name LLM_Service \
@@ -809,7 +844,7 @@ export LLM_PROXY_BACKEND_MODEL="deepseek-chat"
 
 **要点**：
 
-- LM Studio 本地服务器默认端口 `12345`（或 `1234`，取决于版本）。
+- LM Studio 本地服务器默认端口 `1234`。
 - `--backend-model` 必须与 LM Studio 的模型标识一致。
 - 本地服务器不校验密钥，`lm-studio` 即可。
 
@@ -957,8 +992,8 @@ export LLM_PROXY_BACKEND_MODEL="deepseek-chat"
 .\llm_proxy.exe `
   --endpoint 0.0.0.0:9898 `
   --app-name LLM_Service `
-  --backend-url http://127.0.0.1:12345/v1 `
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 ```
 
 **弱机（客户端）**：
@@ -1099,28 +1134,34 @@ chmod 600 ./secrets/deepseek.key
 
 **目标**：客户端发送带图片的 `generate` 请求，`llm_proxy` 转发到 LM Studio 的 VLM。
 
-**前置准备**：LM Studio 加载 **Qwen2-VL / Llava 等多模态模型**。
+**前置准备**：LM Studio 加载 **Qwen2-VL / Nemotron Omni + mmproj 等多模态模型**。
 
 **启动（Windows / PowerShell）**：
 
 ```powershell
+# ⚠️ 必须显式传 --vision，否则图片附件会被拒绝
 .\llm_proxy.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "qwen2-vl-7b-instruct"
+  --backend-model "qwen2-vl-7b-instruct" `
+  --vision
 ```
 
 **启动（Linux / Shell）**：
 
 ```bash
+# ⚠️ 必须显式传 --vision
 ./llm_proxy \
   --backend-url http://127.0.0.1:1234/v1 \
-  --backend-model "qwen2-vl-7b-instruct"
+  --backend-model "qwen2-vl-7b-instruct" \
+  --vision
 ```
 
 **关键点**：
 
-- **后端必须是 VLM**——`llm_proxy` 只是转发者，不解析图片
-- **客户端**：通过 `generate` 的 `attachments` 数组携带图片
+- **必须传 `--vision`**——否则图片附件会被拒绝（返回 `code: -1`）。
+- **`--backend-model` 必须指向 VLM**——若为空，`llm_proxy` 从 `/v1/models` 拉第一个，可能不是 VLM。
+- **后端必须是 VLM**——`llm_proxy` 只是转发者，不解析图片。
+- **客户端**：通过 `generate` 的 `attachments` 数组携带图片。
 
 **客户端示例（Pascal）**：
 
@@ -1272,9 +1313,10 @@ curl.exe -X POST https://api.deepseek.com/v1/chat/completions `
 
 **排查顺序**：
 
-1. **后端是否加载了 VLM？** 纯文本模型不认图片。
-2. **`--backend-model` 是否指向 VLM？** 若为空，`llm_proxy` 从 `/v1/models` 拉第一个——可能不是 VLM。
-3. **客户端是否正确组装 `attachments`？** 检查 `kind` 字段是 `"image"`、`data_b64` 非空。
+1. **`--vision` 是否传了？** 若未传，图片附件会被 `llm_proxy` 直接拒绝（返回 `code: -1`），根本不会到达后端。
+2. **后端是否加载了 VLM？** 纯文本模型不认图片。
+3. **`--backend-model` 是否指向 VLM？** 若为空，`llm_proxy` 从 `/v1/models` 拉第一个——可能不是 VLM。
+4. **客户端是否正确组装 `attachments`？** 检查 `kind` 字段是 `"image"`、`data_b64` 非空。
 
 ### Q10：需要工具调用怎么办？
 
@@ -1284,6 +1326,19 @@ curl.exe -X POST https://api.deepseek.com/v1/chat/completions `
 
 - 需要**服务端代管工具执行** → 用 [`llm_proxy_tool.exe`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)（LTB）
 - 需要**客户端侧工具执行** → 客户端需支持 MCP，配合 [`mcp_api_tool`](LingoFuse_LLM_Ecosystem_User_Guide.md)
+
+### Q11：`--vision` 传了但图片还是"看不到"
+
+**排查**：
+
+1. **确认后端确实是 VLM**——用 LM Studio GUI 直接发图片测试。
+2. **确认 `--backend-model` 就是 VLM 的模型 ID**——与 LM Studio 中的显示名称**完全一致**。
+3. **检查 LM Studio 的 `/v1/models`**：
+   ```bash
+   curl http://127.0.0.1:1234/v1/models
+   ```
+   返回的 ID 就是应该传给 `--backend-model` 的值。
+4. **查看 `llm_proxy` 的 DEBUG 日志**——确认转发的 payload 中包含 `image_url` 部分。
 
 ---
 
@@ -1313,13 +1368,18 @@ LingoFuse 服务
   --max-sessions N        最大并发会话数 (默认: 1024)
   --session-timeout SEC   会话空闲超时秒 (默认: 1800)
 
+多模态
+  --vision                启用图片附件转发 (默认: 禁用)
+  --no-vision             显式禁用 (默认行为)
+
 日志
   --log-level LEVEL       DEBUG / INFO / WARNING / ERROR (默认: INFO)
 
 环境变量与参数一一对应 (前缀 LLM_PROXY_*)
 
 ⚠️ llm_proxy 不支持工具调用。需要工具请用 llm_proxy_tool（LTB）。
-多模态：llm_proxy 原样转发图片附件到后端。是否支持取决于后端。
+⚠️ 多模态：llm_proxy 原样转发图片附件到后端。必须显式传 --vision 才能转发；是否支持取决于后端。
+⚠️ llm_proxy 的 vision 字段固定为 0（服务端自身不做视觉处理）。
 ```
 
 ---
@@ -1328,22 +1388,25 @@ LingoFuse 服务
 
 | 文档 | 说明 |
 |------|------|
-| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心组件 + 两条路径） |
+| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心应用组件 + 两条路径） |
 | [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册 |
 | [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册 |
-| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 129+ OpenAI 兼容后端清单 |
+| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 250+ OpenAI 兼容后端清单 |
 | [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法 |
 | [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
+| [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档 |
 
 ### 根目录相关文档
 
 | 文档 | 说明 |
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
+| [`../Build_Guide.md`](../Build_Guide.md) | 编译指南 |
 | [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
 
 ---
 
-**文档版本**：v4.0（v3 架构重写版——新增多模态转发说明，更新文档索引，移除已删除文档链接）  
-**维护者**：LingoFuse-pasAgent 团队  
+**文档版本**：v4.1（v3 架构重写版 · 多模态参数修正版——补充 `--vision` 参数详解、修正启动横幅与源码字段对齐、`129+` → `250+` 统一、`vision=0` 语义说明）
+
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
