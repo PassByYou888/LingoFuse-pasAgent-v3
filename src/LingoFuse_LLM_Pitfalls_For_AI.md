@@ -2,8 +2,8 @@
 
 > **目标读者**：**AI 助手**
 > **用途**：接手本项目时，快速避坑
-> **覆盖范围**：服务端 / 代理层 / 客户端 / 协议 / 跨语言 / GUI / 多模态
-> **文档版本**：v4.0（v3 架构重写版）
+> **覆盖范围**：服务端 / 代理层 / 客户端 / 协议 / 跨语言 / GUI / 多模态 / **结构化输出**
+> **文档版本**：v5.0（v3 架构重写版 + Structured Output 合并版）
 > **最后更新**：2026-09-17
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
@@ -12,6 +12,8 @@
 > - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) — LTB 命令行手册
 > - [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) — 后端兼容清单
 > - [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) — 版本演进
+> - [`llm_client_v3.md`](llm_client_v3.md) — Pascal 客户端 SDK 文档（**含 §16 Structured Output**）
+> - [`Structured_Output_Learning_Guide.md`](../Structured_Output_Learning_Guide.md) — **Structured Output 完整学习指南**
 
 ---
 
@@ -19,7 +21,7 @@
 
 本文档**不解释原理**，只列**踩过的坑 + 正确做法**。
 每条坑格式：**症状 → 根因 → 正确做法**。
-AI 检索时可直接搜关键词（如 `client_name`、`var/out`、`Streaming stall`、`max_tool_rounds`、`多模态`、`P8`）。
+AI 检索时可直接搜关键词（如 `client_name`、`var/out`、`Streaming stall`、`max_tool_rounds`、`多模态`、`P8`、`Structured Output`、`response_format`、`P9`）。
 
 **优先级标识**：
 
@@ -27,15 +29,17 @@ AI 检索时可直接搜关键词（如 `client_name`、`var/out`、`Streaming s
 - 🟠 **严重**：逻辑错误 / 静默失败
 - 🟡 **一般**：体验 / 可维护性
 
-**v3 版本标识**：
+**版本标识**：
 
 - 无标识：v2 已有坑，v3 继续适用
 - 🆕 **v3 新增**：v3 架构变化引入的新坑
+- 🆕🆕 **v3.10 新增**：Structured Output 引入的新坑（P9 系列）
 
 **仓库归属说明**：
 
 - 本文档中提到的 **Pascal GUI 客户端**（`llm_client.pas`、`llm_tool_frm.pas`、`llm_tool_frm.lfm`）属于 **LingoFuse 核心仓库**，**不在本仓库**（`LingoFuse-pasAgent-v3`）。
-- 本仓库包含：Python 组件（`llm_*.py`）、MCP 网关（`mcp_api_tool.py`）、LTB（`llm_proxy_tool.py`）、Pascal 服务端示例（`pascal_agent_*.lpr`）。
+- 本文档中提到的 **`llm_client_v3.pas`**、**`llm_tool_v3_frm.pas`**、**`llm_tool_v3.lpi`** 属于 **本仓库**（`LingoFuse-pasAgent-v3`）。
+- 本仓库还包含：Python 组件（`llm_*.py`）、MCP 网关（`mcp_api_tool.py`）、LTB（`llm_proxy_tool.py`）、Pascal 服务端示例（`pascal_agent_*.lpr`）。
 
 ---
 
@@ -49,7 +53,8 @@ flowchart TB
     ROOT --> B["🟩 Python 服务端坑"]
     ROOT --> P["🟪 llm_proxy 传输坑"]
     ROOT --> L["🔴 LTB 服务端工具执行坑"]
-    ROOT --> M["🌐 多模态转发坑（v3 新增）"]
+    ROOT --> M["🌐 多模态转发坑（v3 新增 · P8）"]
+    ROOT --> SO["🎯 Structured Output 坑（v3.10 新增 · P9）"]
     ROOT --> C["🟫 Pascal 客户端坑"]
     ROOT --> D["🟧 跨语言协议坑"]
     ROOT --> E["🟥 GUI 集成坑"]
@@ -81,6 +86,16 @@ flowchart TB
     M --> M2["历史占位符替换"]
     M --> M3["llm_service 不支持多模态"]
 
+    SO --> SO1["llm_service 不支持 SO"]
+    SO --> SO2["response_format 被静默丢弃"]
+    SO --> SO3["json_schema 嵌套两层"]
+    SO --> SO4["strict 用了字符串"]
+    SO --> SO5["additionalProperties 缺失"]
+    SO --> SO6["oneOf 等不支持的关键字"]
+    SO --> SO7["图片 + schema 无单一方法"]
+    SO --> SO8["坐标未归一化 / 顺序错"]
+    SO --> SO9["tool_calls 与 SO 冲突"]
+
     C --> C1["var/out 同签名"]
     C --> C2["事件签名对齐"]
     C --> C3["Connect 部分失败"]
@@ -99,6 +114,7 @@ flowchart TB
     style P fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
     style L fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style M fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
+    style SO fill:#B7791F,stroke:#7E5109,stroke-width:4px,color:#FFFFFF
     style C fill:#7B241C,stroke:#4A1108,stroke-width:3px,color:#FFFFFF
     style D fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
     style E fill:#C0392B,stroke:#641E16,stroke-width:3px,color:#FFFFFF
@@ -431,7 +447,7 @@ def _handle_set_system_message(self, data):
 **客户端必须准备接受失败**：
 
 ```pascal
-// ✅ 温和处理失败（Pascal 客户端，位于 LingoFuse 核心仓库）
+// ✅ 温和处理失败
 if not LLM.SetSystemMessage(new_sys, err) then
 begin
   DoStatus('更新系统消息失败: ' + err);
@@ -462,7 +478,6 @@ end;
 // ✅ 所有 Do_LLM_* 事件处理器里，先做会话过滤
 procedure Tllm_tool_form.Do_LLM_Chunk(const SessionId, Chunk: string);
 begin
-  // 只处理当前显示的会话；空字符串表示尚未选定（兜底）
   if (FActiveSessionId <> '') and (SessionId <> FActiveSessionId) then
     Exit;
   ...
@@ -774,7 +789,946 @@ flowchart LR
 
 ---
 
-## 六、🟠 Python 服务端坑
+## 六、🎯 Structured Output 坑（v3.10 新增 · P9 系列）
+
+> 🆕🆕 **v3.10 新增**。Structured Output（结构化输出）让模型**严格按照调用方提供的 JSON Schema 生成输出**。
+>
+> **目标读者**：需要让模型返回可靠 JSON 的开发者（检测器、信息抽取、分类、OCR、关键点检测等）。
+>
+> **能力边界速查**：
+>
+> | 服务端 | 是否支持 SO |
+> |--------|:----------:|
+> | `llm_service` | ❌ 不支持（本地推理路径无 response_format 转发） |
+> | `llm_proxy` | ✅ 支持（原样转发到后端） |
+> | `llm_proxy_tool` | ✅ 支持（同 llm_proxy） |
+>
+> **客户端入口**（`llm_client_v3.pas` v3.10）：
+> - `GenerateStructured`：完整 response_format JSON
+> - `GenerateWithJsonSchema`：纯 schema，无附件
+> - **`GenerateWithImageFileAndSchema`**：**图片 + schema 一步到位**（**推荐**）
+> - `GenerateWithAttachmentsAndSchema`：附件数组 + schema
+>
+> **完整学习**：见 [`Structured_Output_Learning_Guide.md`](../Structured_Output_Learning_Guide.md)。
+
+### P9-1. 🆕🆕 **`llm_service` 不支持 Structured Output**
+
+**症状**：
+
+- 客户端调用 `GenerateWithJsonSchema` / `GenerateWithImageFileAndSchema`
+- 返回 `code: 0`，没有报错
+- 但模型回复的是**自由文本**，不是 JSON
+- 或者根本没有任何结构化约束
+
+**根因**：
+`llm_service` 的本地推理路径（llama.cpp）**不转发** `options.response_format`。
+代理层 `llm_proxy` / LTB 会把 `response_format` 原样传给后端，但**本地推理不走代理层**。
+
+**正确做法**：
+
+```pascal
+// ✅ 调用前检查服务端类型
+if LLM.ServerKind = 'service' then
+begin
+  ShowMessage('llm_service 不支持 Structured Output');
+  ShowMessage('请改用 llm_proxy / llm_proxy_tool + LM Studio 等后端');
+  Exit;
+end;
+
+// ✅ 或用能力发现（虽然能力矩阵里没有 response_format 字段）
+if not LLM.HasAttachments then
+begin
+  ShowMessage('服务端不接受附件（SO 通常需要图片支持）');
+  Exit;
+end;
+```
+
+**正确链路**：
+
+```
+Pascal 客户端 → llm_proxy / LTB → LM Studio（VLM）→ 约束解码
+                              ↑
+                    这里必须走代理
+```
+
+**AI 检索关键词**：`Structured Output`、`llm_service`、`response_format 不生效`、`纯文本返回`。
+
+---
+
+### P9-2. 🆕🆕 **`response_format` 被代理层静默丢弃**
+
+**症状**：
+
+- 客户端发送了 `options.response_format`
+- 后端 LM Studio 日志**根本没有** `response_format` 字段
+- 代理层 DEBUG 日志里没有 `response_format=yes`
+
+**根因**：
+`llm_proxy` / LTB 的 `sanitize_options` 使用**白名单**机制。只有列在 passthrough 白名单里的字段才会被转发。如果代理层版本过旧（v3.1 之前），`response_format` **不在白名单**里，会被静默丢弃。
+
+**正确做法**：
+
+**步骤 1：确认代理层版本**
+
+v3.2+ 的 `llm_proxy.py` / `llm_proxy_tool.py` 已在 `sanitize_options` 中显式加入 `response_format`：
+
+```python
+# llm_proxy.py
+options = sanitize_options(
+    options_raw,
+    passthrough={
+        "response_format": lambda v: isinstance(v, dict),   # ← 关键
+    },
+    ...
+)
+
+# llm_proxy_tool.py
+options = sanitize_options(
+    options_raw,
+    scalar_specs=COMMON_SCALAR_SPECS,
+    passthrough={
+        "tools":           lambda v: isinstance(v, list),
+        "tool_choice":     lambda v: isinstance(v, (str, dict)),
+        "response_format": lambda v: isinstance(v, dict),   # ← 关键
+    },
+    ...
+)
+```
+
+**步骤 2：确认 `sse_client.py` 转发**
+
+`llm_common/sse_client.py` 的 `_FORWARDED_PASSTHROUGH_KEYS` 必须包含 `response_format`：
+
+```python
+_FORWARDED_PASSTHROUGH_KEYS = (
+    "tools",
+    "tool_choice",
+    "response_format",   # ← v3.1 起加入
+)
+```
+
+**步骤 3：观察 DEBUG 日志**
+
+```powershell
+.\llm_proxy.exe --log-level DEBUG --vision `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "qwen2-vl-7b-instruct"
+```
+
+观察日志中是否有：
+```
+[DEBUG] Backend request: url=... model=... msgs=N tools=no response_format=yes
+```
+
+- `response_format=yes` → 转发成功
+- `response_format=no` → 客户端没传 / 被静默丢弃
+
+**AI 检索关键词**：`response_format 被丢弃`、`sanitize_options`、`passthrough 白名单`、`_FORWARDED_PASSTHROUGH_KEYS`。
+
+---
+
+### P9-3. 🆕🆕 **`json_schema` 嵌套了两层**
+
+**症状**：
+
+- 后端返回 HTTP 400 或 422
+- 错误信息含 `unrecognized type json_schema`
+- 或 `invalid response_format structure`
+
+**根因**：
+`response_format` 的**正确结构**是：
+
+```json
+{
+  "type": "json_schema",
+  "json_schema": {          ← 只有这一层
+    "name": "...",
+    "strict": true,
+    "schema": { ... }
+  }
+}
+```
+
+**错误结构**（多嵌套一层）：
+
+```json
+{
+  "type": "json_schema",
+  "json_schema": {
+    "json_schema": {        ← ❌ 多了一层
+      "name": "...",
+      "schema": { ... }
+    }
+  }
+}
+```
+
+**为什么会犯这个错**：
+- 手写 JSON 字符串时容易复制粘贴错误。
+- 从旧文档抄来的错误结构。
+
+**正确做法**：
+
+**方法 1（推荐）**：用 SDK 的高层方法，自动组装正确的结构：
+
+```pascal
+// ✅ 用 GenerateWithImageFileAndSchema 或 GenerateWithJsonSchema
+// SDK 内部会正确组装 {"type":"json_schema","json_schema":{...}}
+LLM.GenerateWithImageFileAndSchema(
+  '检测图片', '', 'test.png',
+  'object_detection',
+  SchemaBody,      // 只传 schema 本体（不含外层包装）
+  True,
+  S, E);
+```
+
+**方法 2**：手写完整 JSON 时，严格对照正确结构：
+
+```pascal
+// 完整 response_format JSON（只有一层 json_schema）
+RF := '{"type":"json_schema","json_schema":{' +
+      '"name":"object_detection","strict":true,' +
+      '"schema":{...}}}}';   // ← 注意右花括号数量
+
+LLM.GenerateStructured('检测图片', '', RF, S, E);
+```
+
+**AI 检索关键词**：`unrecognized type json_schema`、`json_schema 嵌套`、`response_format 结构错误`。
+
+---
+
+### P9-4. 🆕🆕 **`strict` 用了字符串而非布尔值**
+
+**症状**：
+
+- 后端返回 400 或静默忽略 schema
+- 或者模型可以输出 schema 之外的额外字段（严格模式没生效）
+
+**根因**：
+JSON Schema 中 `strict` 是**布尔值**，不是字符串：
+
+```json
+// ❌ 错误
+"strict": "true"
+
+// ✅ 正确
+"strict": true
+```
+
+**为什么会犯这个错**：
+- 手写 JSON 时把 `true` 写成 `"true"`。
+- 从其他语言（如 Python 字典转字符串）复制时引入。
+
+**正确做法**：
+
+**方法 1（推荐）**：用 SDK 的 `AStrict: boolean` 参数：
+
+```pascal
+// ✅ AStrict 是 Pascal boolean 类型，天然不会出字符串问题
+LLM.GenerateWithJsonSchema(
+  '检测图片', '', 'object_detection', SchemaBody,
+  True,          // ← Pascal boolean，SDK 内部序列化为 JSON true
+  S, E);
+```
+
+**方法 2**：手写 JSON 时仔细检查：
+
+```pascal
+RF := '{"type":"json_schema","json_schema":{' +
+      '"name":"x","strict":true,' +     // ← 不加引号
+      '"schema":{...}}}';
+```
+
+**验证方式**：
+- 打开 DEBUG 日志，观察代理层转发的 payload。
+- 确认 payload 里是 `"strict": true` 而不是 `"strict": "true"`。
+
+**AI 检索关键词**：`strict 字符串`、`strict 类型`、`严格模式不生效`。
+
+---
+
+### P9-5. 🆕🆕 **`additionalProperties: false` 缺失**
+
+**症状**：
+
+- 严格模式（`strict: true`）下，模型仍返回 schema 之外的额外字段
+- 或者后端直接报错 `strict mode requires additionalProperties`
+
+**根因**：
+OpenAI Structured Outputs 的**严格模式**要求每个 object 都显式声明 `additionalProperties: false`。缺失会导致：
+1. 后端拒绝请求（部分后端）。
+2. 严格模式退化为宽松模式。
+
+**正确做法**：
+
+**每个** object schema 都要加 `additionalProperties: false`：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {"type": "string"},
+          "bbox": {"type": "array", "items": {"type": "number"}}
+        },
+        "required": ["label", "bbox"],
+        "additionalProperties": false      ← items 里的 object
+      }
+    }
+  },
+  "required": ["detections"],
+  "additionalProperties": false            ← 顶层 object
+}
+```
+
+**检查清单**：
+- 顶层 object 有 `additionalProperties: false` ✅
+- 每个 `items` 里的 object 有 `additionalProperties: false` ✅
+- 每个嵌套的 object 都有 ✅
+
+**AI 检索关键词**：`additionalProperties`、`严格模式`、`额外字段`、`strict mode requires`。
+
+---
+
+### P9-6. 🆕🆕 **`required` 列表不完整，模型省略字段**
+
+**症状**：
+
+- 模型返回的 JSON 里**缺少某些字段**
+- 例如 schema 定义了 `label` / `bbox` / `confidence`，但模型只返回 `label` 和 `bbox`
+
+**根因**：
+JSON Schema 的 `required` 是**数组**，列出所有必填字段。**没列在 `required` 里的字段都是可选的**——模型可以选择不输出。
+
+**错误示例**：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "label": {"type": "string"},
+    "bbox": {"type": "array", "items": {"type": "number"}},
+    "confidence": {"type": "number"}
+  }
+  // ❌ 没有 required，所有字段都是可选的
+}
+```
+
+**正确做法**：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "label": {"type": "string"},
+    "bbox": {"type": "array", "items": {"type": "number"}},
+    "confidence": {"type": "number"}
+  },
+  "required": ["label", "bbox", "confidence"],   // ← 全部必填
+  "additionalProperties": false
+}
+```
+
+**注意**：
+- **所有你想要模型输出的字段**都必须列入 `required`。
+- **只有真正可选的字段**（如 `notes`、`comment`）才不列入。
+- 严格模式下，`required` 中的每个字段都会出现在输出里。
+
+**AI 检索关键词**：`required`、`字段缺失`、`必填字段`、`模型省略`。
+
+---
+
+### P9-7. 🆕🆕 **使用了不支持的关键字导致后端 400**
+
+**症状**：
+
+- 后端返回 HTTP 400
+- 错误信息含 `unsupported keyword`、`invalid schema`、`oneOf is not supported`
+
+**根因**：
+OpenAI Structured Outputs **不支持完整的 JSON Schema 规范**，只支持一个**子集**。
+
+**不支持的关键字**：
+
+| 关键字 | 说明 |
+|--------|------|
+| `oneOf` | 需要更复杂的状态机 |
+| `allOf` | 同上 |
+| `not` | 同上 |
+| `if` / `then` / `else` | 条件逻辑 |
+| `patternProperties` | 正则属性名 |
+| `minProperties` / `maxProperties` | 属性数量限制 |
+| `propertyNames` | 属性名校验 |
+| `dependencies` | 属性依赖 |
+| `unevaluatedProperties` | 复杂校验 |
+
+**正确做法**：
+
+**替换方案 A**：用 `anyOf` 替代 `oneOf`（部分后端支持）：
+
+```json
+// ❌ 不支持
+{"oneOf": [{"type": "string"}, {"type": "number"}]}
+
+// ✅ 用 anyOf（如果后端支持）
+{"anyOf": [{"type": "string"}, {"type": "number"}]}
+
+// ✅ 或用 enum 限定取值
+{"type": "string", "enum": ["option1", "option2"]}
+```
+
+**替换方案 B**：简化 schema，用 `description` 说明：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "value": {
+      "type": "string",
+      "description": "Either a number-as-string or a category name"
+    }
+  }
+}
+```
+
+**替换方案 C**：拆成多次请求：
+
+```pascal
+// 第一次：判断是哪种类型
+// 第二次：按类型请求对应的 schema
+```
+
+**AI 检索关键词**：`oneOf`、`allOf`、`not`、`unsupported keyword`、`invalid schema`。
+
+---
+
+### P9-8. 🆕🆕 **图片 + schema 组合场景没有单一方法（v3.10 之前）**
+
+**症状**：
+
+- 需要同时发送**图片附件**和**response_format**
+- v3.9 及更早的 SDK **没有**单一方法
+- 手写组合请求容易漏字段或结构错误
+
+**根因**：
+v3.9 的 SDK 只有：
+- `GenerateWithAttachments`：有附件，无 schema
+- `GenerateWithJsonSchema`：有 schema，无附件
+
+两者**不能组合**。用户只能手写 JSON 或调用底层 `CallAPI`。
+
+**正确做法**：
+
+**升级到 SDK v3.10**，使用新增的组合方法：
+
+```pascal
+// ✅ v3.10 推荐：图片 + schema 一步到位
+LLM.GenerateWithImageFileAndSchema(
+  '检测图片中的所有目标',
+  '',
+  'photo.png',
+  'object_detection',
+  SchemaBody,
+  True,
+  S, E);
+
+// ✅ v3.10 也支持多附件 + schema
+LLM.GenerateWithAttachmentsAndSchema(
+  '根据 labels.txt 的类别映射检测图片',
+  '',
+  Texts, Images,        // 完整附件数组
+  'object_detection',
+  SchemaBody,
+  True,
+  S, E);
+```
+
+**不要手写组合请求**——`SendGenerateCombined` 内部已经正确处理了 session 解析、附件组装、response_format envelope 等细节。
+
+**AI 检索关键词**：`图片 + schema`、`附件 + schema`、`GenerateWithImageFileAndSchema`、`GenerateWithAttachmentsAndSchema`、`v3.10`。
+
+---
+
+### P9-9. 🆕🆕 **坐标未归一化 / 顺序错误 / 上下颠倒**
+
+**症状**：
+
+- JSON 合法，`label` 也对
+- 但 `bbox` 数值和图像中物体的实际位置不符
+- 例如：`bbox` 是 `[123, 234, 456, 789]`（像素），而不是 `[0.12, 0.23, 0.45, 0.78]`（归一化）
+
+**根因**（三种可能）：
+
+**可能 1：坐标未归一化**
+模型输出**像素坐标**（相对图像宽高），而不是 `0~1` 的相对值。
+
+**可能 2：坐标顺序错误**
+模型使用 `[y_min, x_min, y_max, x_max]`，但下游按 `[x_min, y_min, x_max, y_max]` 使用。
+
+**可能 3：上下颠倒**
+模型使用**图像坐标系**（左上为原点），某些模型使用**数学坐标系**（左下为原点）。
+
+**正确做法**：
+
+**步骤 1：schema 里加约束**
+
+```json
+"bbox": {
+  "type": "array",
+  "items": {"type": "number", "minimum": 0, "maximum": 1},
+  "minItems": 4,
+  "maxItems": 4
+}
+```
+
+**步骤 2：提示词里明确约定**
+
+```
+返回归一化坐标（0~1），格式为 [x_min, y_min, x_max, y_max]，
+其中 (x_min, y_min) 是左上角，(x_max, y_max) 是右下角。
+```
+
+**步骤 3：做单目标测试**
+
+用一张只有一个明显物体的图（如一个苹果），验证：
+- `bbox` 值是否都在 `[0, 1]` 之间。
+- 苹果在图像左上角时，`bbox` 是否接近 `[0, 0, 0.5, 0.5]`。
+- 苹果在图像右下角时，`bbox` 是否接近 `[0.5, 0.5, 1, 1]`。
+
+**步骤 4：客户端做归一化兼容**
+
+```pascal
+// ✅ 客户端兼容像素坐标（如果模型不遵循归一化）
+var
+  X1, Y1, X2, Y2: double;
+  ImgW, ImgH: double;
+begin
+  X1 := B.F[0];
+  Y1 := B.F[1];
+  X2 := B.F[2];
+  Y2 := B.F[3];
+
+  // 如果看起来是像素坐标，转换为归一化
+  if (X1 > 1) or (Y1 > 1) or (X2 > 1) or (Y2 > 1) then
+  begin
+    ImgW := ImageWidth;   // 从图像元数据获取
+    ImgH := ImageHeight;
+    X1 := X1 / ImgW;
+    Y1 := Y1 / ImgH;
+    X2 := X2 / ImgW;
+    Y2 := Y2 / ImgH;
+  end;
+end;
+```
+
+**AI 检索关键词**：`bbox 坐标`、`归一化`、`坐标顺序`、`像素坐标`、`坐标颠倒`。
+
+---
+
+### P9-10. 🆕🆕 **`confidence` 输出超出 `0~1` 范围**
+
+**症状**：
+
+- 模型返回 `confidence: 95` 而不是 `0.95`
+- 或 `confidence: -1`（负值）
+
+**根因**：
+模型可能把置信度理解为**百分数**（`0~100`）。虽然 schema 里有 `minimum: 0, maximum: 1`，但**部分后端不强制** min/max 约束，模型仍可能输出超界值。
+
+**正确做法**：
+
+**步骤 1：schema 里加强说明**
+
+```json
+"confidence": {
+  "type": "number",
+  "minimum": 0,
+  "maximum": 1,
+  "description": "Confidence score as a decimal between 0.0 and 1.0 (e.g. 0.95, NOT 95)"
+}
+```
+
+**步骤 2：提示词里明确**
+
+```
+confidence 必须是 0.0 ~ 1.0 之间的小数（例如 0.95，不是 95）。
+```
+
+**步骤 3：客户端做兼容**
+
+```pascal
+// ✅ 兼容百分数
+var
+  Conf: double;
+begin
+  Conf := D.O[I].F['confidence'];
+  if Conf > 1 then
+    Conf := Conf / 100;   // 95 → 0.95
+  if Conf < 0 then
+    Conf := 0;            // 负值 → 0
+  if Conf > 1 then
+    Conf := 1;            // 超过 100 的异常值 → 1
+end;
+```
+
+**AI 检索关键词**：`confidence 超界`、`置信度百分数`、`minimum maximum 不生效`。
+
+---
+
+### P9-11. 🆕🆕 **schema 太复杂导致编译失败或超时**
+
+**症状**：
+
+- 后端返回 500 或超时
+- 错误信息含 `schema compilation failed`、`timeout`、`too complex`
+- 请求长时间无响应
+
+**根因**：
+JSON Schema 会被后端**编译成有限状态机**。如果 schema 太复杂：
+- 状态数量指数爆炸。
+- 编译时间过长。
+- 内存占用过高。
+
+**常见的"太复杂"信号**：
+
+| 特征 | 阈值（建议） |
+|------|:-----------:|
+| 嵌套深度 | ≤ 5 层 |
+| 字段总数 | ≤ 50 |
+| `enum` 数量 | ≤ 100 个值 |
+| 数组元素类型 | 尽量单一 |
+| 递归引用 | 避免 |
+
+**正确做法**：
+
+**策略 1：简化 schema**
+
+```json
+// ❌ 深度 6 层，字段上百
+{ ... }
+
+// ✅ 扁平化，深度 ≤ 3
+{
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": { ... }   // 深度 2
+    }
+  }
+}
+```
+
+**策略 2：拆分成多次请求**
+
+```pascal
+// 第一次：整体信息
+LLM.GenerateWithImageFileAndSchema(..., 'image_summary', SimpleSchema1, ...);
+
+// 第二次：局部信息（基于第一次的结果）
+LLM.GenerateWithImageFileAndSchema(..., 'object_details', SimpleSchema2, ...);
+```
+
+**策略 3：用 `description` 替代复杂约束**
+
+```json
+// ❌ 用 $ref 定义共享子 schema
+{"$defs": {...}, "$ref": "#/$defs/Point"}
+
+// ✅ 直接展开，简单直白
+{
+  "type": "object",
+  "properties": {
+    "x": {"type": "number"},
+    "y": {"type": "number"}
+  }
+}
+```
+
+**AI 检索关键词**：`schema 太复杂`、`编译失败`、`嵌套深度`、`状态机爆炸`。
+
+---
+
+### P9-12. 🆕🆕 **后端版本过旧，不支持 Structured Outputs**
+
+**症状**：
+
+- 后端返回 400 或直接忽略 `response_format`
+- 错误信息含 `unknown parameter`、`unsupported`
+
+**根因**：
+Structured Outputs 是**较新的特性**，旧版本后端不支持。
+
+**版本要求**：
+
+| 后端 | 最低版本 |
+|------|:--------:|
+| LM Studio | **0.3.0+** |
+| Ollama | **0.3.0+** |
+| vLLM | **0.6.0+** |
+| SGLang | 较新版本 |
+| TGI | 部分支持 |
+
+**正确做法**：
+
+**步骤 1：查看后端版本**
+
+```bash
+# LM Studio
+# 启动时，窗口标题/关于对话框显示版本
+
+# Ollama
+ollama --version
+
+# vLLM
+python -c "import vllm; print(vllm.__version__)"
+```
+
+**步骤 2：升级后端**
+
+- LM Studio：从官网下载最新版。
+- Ollama：`curl -fsSL https://ollama.com/install.sh | sh`（Linux/macOS）。
+- vLLM：`pip install --upgrade vllm`。
+
+**步骤 3：手工验证**
+
+```bash
+curl -N -X POST http://127.0.0.1:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "your-model",
+    "messages": [{"role": "user", "content": "Say hi"}],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "greeting",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {"message": {"type": "string"}},
+          "required": ["message"],
+          "additionalProperties": false
+        }
+      }
+    }
+  }'
+```
+
+**成功**：返回合法 JSON。
+**失败**：返回纯文本或 400。
+
+**AI 检索关键词**：`后端版本`、`LM Studio 0.3.0`、`Ollama 0.3.0`、`vLLM 0.6.0`、`不支持 structured output`。
+
+---
+
+### P9-13. 🆕🆕 **模型不支持 Structured Outputs**
+
+**症状**：
+
+- 后端版本正确（如 LM Studio 0.3.0+）
+- schema 结构也对
+- 但模型**仍然返回纯文本**
+- 或返回的 JSON 不符合 schema（缺字段、字段名错、类型错）
+
+**根因**：
+**不是所有模型都支持 Structured Outputs**。
+
+**支持要求**：
+1. 参数量 **≥ 7B**（小模型无法稳定遵循 schema）。
+2. 经过**专门训练**或**微调**（支持 JSON Schema 约束解码）。
+3. 是 **Chat 格式模型**（不是纯文本补全模型）。
+
+**推荐的模型**：
+
+| 模型 | 参数量 | 多模态 | 备注 |
+|------|:------:|:------:|------|
+| Qwen2.5 系列 | 7B+ | ❌ | 纯文本，Structured Outputs 表现优秀 |
+| Qwen2.5-VL 系列 | 7B+ | ✅ | 视觉语言模型，支持图片 + SO |
+| Nemotron Omni | 30B (激活 3B) | ✅ | LingoFuse 推荐模型 |
+| GPT-4o | - | ✅ | OpenAI 云端 |
+| Claude 3.5 | - | ✅ | Anthropic 云端 |
+
+**不推荐的模型**：
+- 参数量 < 7B（如 Phi-3-mini、Qwen2-1.5B）。
+- 未针对 Structured Outputs 训练的模型。
+- 纯文本补全模型（如 GPT-2、早期 LLaMA）。
+
+**正确做法**：
+
+**步骤 1：确认模型 ID**
+
+```bash
+curl http://127.0.0.1:1234/v1/models
+```
+
+**步骤 2：换更强的模型**
+
+```powershell
+# 从 Qwen2.5-1.5B 换成 Qwen2.5-7B
+.\llm_proxy.exe `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "qwen2.5-7b-instruct" `
+  --vision
+```
+
+**步骤 3：验证模型能遵循 schema**
+
+用一个简单 schema 测试：
+```json
+{
+  "type": "object",
+  "properties": {
+    "answer": {"type": "integer"},
+    "explanation": {"type": "string"}
+  },
+  "required": ["answer", "explanation"],
+  "additionalProperties": false
+}
+```
+
+如果连这个都做不到，换模型。
+
+**AI 检索关键词**：`模型不支持`、`参数量`、`Qwen2.5-VL`、`7B`、`遵循 schema 失败`。
+
+---
+
+### P9-14. 🆕🆕 **`tool_calls` 与 `response_format` 冲突（LTB 场景）**
+
+**症状**：
+
+- LTB 内部多轮工具调用时，**模型始终不返回 `tool_calls`**
+- 每次都是符合 schema 的 JSON 文本
+- 工具调用循环永远无法触发
+- 或者：模型返回 `tool_calls`，但 `arguments` 是纯文本而非 JSON
+
+**根因**：
+**`response_format` 与 `tools` 是竞争关系**：
+- 如果 `response_format` 强制模型输出某个 schema 的 JSON，模型就**无法返回 `tool_calls`**（因为 `tool_calls` 是特殊的响应结构）。
+- 部分后端会**优先响应 `response_format`**，忽略 `tools`。
+
+**LTB 的多轮协议**：
+
+```
+Round 0: [messages, tools, response_format?]  ← 冲突点
+    ├─ 后端优先 tools → 返回 tool_calls → 执行工具 → Round 1
+    └─ 后端优先 response_format → 返回 JSON 文本 → 循环结束（但工具没执行）
+```
+
+**正确做法**：
+
+**策略 1（推荐）：检测器 + 工具分开调用**
+
+把任务拆成**两次调用**：
+1. **第一次**：用 `response_format` 做**检测**，返回 JSON（含框和标签）。
+2. **第二次**：用 `tools` 做**后续动作**（如根据检测结果调用某个工具）。
+
+```pascal
+// 第一次：检测
+LLM.GenerateWithImageFileAndSchema(..., SchemaBody, ...);
+
+// 第二次：基于检测结果执行动作
+LLM.Generate('把检测结果发给 xxx 工具', ...);   // 走 tools 路径
+```
+
+**策略 2：不用工具时纯 SO**
+
+如果本次请求**不需要工具调用**：
+```powershell
+.\llm_proxy_tool.exe --no-tools --vision `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "qwen2-vl-7b-instruct"
+```
+
+此时 LTB 退化为 `llm_proxy`，纯转发 + SO。
+
+**策略 3：schema 里包含 tool_call 字段**
+
+让 schema 本身**允许模型输出 "我要调工具"**：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["answer", "call_tool"]
+    },
+    "answer": {"type": "string"},
+    "tool_name": {"type": "string"},
+    "tool_args": {"type": "object"}
+  },
+  "required": ["action", "answer", "tool_name", "tool_args"],
+  "additionalProperties": false
+}
+```
+
+**但这需要客户端解析并手动执行工具**——已经不是 LTB 的职责了。
+
+**AI 检索关键词**：`tool_calls 冲突`、`response_format 与 tools`、`LTB 不执行工具`、`SO 场景用工具`。
+
+---
+
+### P9-15. 🆕🆕 **多轮工具循环中 `response_format` 未清除，模型无法返回 `tool_calls`**
+
+**症状**：
+
+- LTB 第一轮（Round 0）能返回 `tool_calls`
+- 第二轮（Round 1+）开始，模型**始终返回纯 JSON 文本**，不再调用工具
+- 工具链提前终止
+
+**根因**：
+`options.response_format` 被 `_run_generation` **每轮都原样转发**给后端。第二轮以后，模型被 `response_format` 约束，**失去了返回 `tool_calls` 的自由**。
+
+**当前 v3.10 LTB 的行为**：
+
+```python
+# 每一轮都携带 response_format
+round_options = dict(options)   # 包含 response_format
+if tools_available and not is_final_round:
+    round_options["tools"] = self._openai_tools_cache
+```
+
+**正确的策略**（未来版本改进方向）：
+
+```python
+# 只在最后一轮（或非工具调用轮）才加 response_format
+round_options = dict(options)
+round_options.pop("response_format", None)   # 工具轮不带 SO
+
+if is_final_round:
+    round_options["response_format"] = original_response_format   # 最后一轮才加
+```
+
+**当前 v3.10 的变通方法**：
+
+**方法 1**：不用工具，用 SO
+```powershell
+.\llm_proxy_tool.exe --no-tools --vision `
+  --backend-url http://127.0.0.1:1234/v1 `
+  --backend-model "qwen2-vl-7b-instruct"
+```
+
+**方法 2**：不用 SO，用工具
+```pascal
+// 检测器不用 schema，靠提示词
+LLM.GenerateWithImageFile(
+  '检测图片中的所有目标。返回 JSON 数组，每项含 label 和 bbox',
+  '', 'photo.png', S, E);
+```
+
+**方法 3**：**分开两次调用**（推荐）
+- 第一次：SO 检测（`llm_proxy` + `--vision`）
+- 第二次：工具调用（LTB + `--no-tools` 关闭 SO）
+
+**AI 检索关键词**：`工具链 response_format 冲突`、`多轮循环不带 SO`、`SO 与 tools 共存`。
+
+---
+
+## 七、🟠 Python 服务端坑
 
 ### P1-1. **Chat template 搜索路径与脚本位置不一致**
 
@@ -972,7 +1926,7 @@ end;
 
 ---
 
-## 七、🟡 编码相关坑
+## 八、🟡 编码相关坑
 
 ### P2-1. **JSON 经 `string` 中转导致中文乱码**
 
@@ -1084,7 +2038,7 @@ _setup_console_encoding()
 
 ---
 
-## 八、🟠 多会话 / 生命周期坑
+## 九、🟠 多会话 / 生命周期坑
 
 ### P3-1. **Watchdog 误杀正在生成的会话**
 
@@ -1161,9 +2115,9 @@ end;
 
 ---
 
-## 九、🟡 GUI 集成坑
+## 十、🟡 GUI 集成坑
 
-> 以下坑主要针对 **Pascal GUI 客户端**（`llm_client.pas` / `llm_tool_frm.pas`），源码位于 **LingoFuse 核心仓库**。
+> 以下坑同时适用于 **本仓库的 `llm_client_v3.pas` / `llm_tool_v3_frm.pas`** 和 **LingoFuse 核心仓库的 `llm_client.pas` / `llm_tool_frm.pas`**。
 
 ### P4-1. **后台线程直接读 UI 控件**
 
@@ -1366,7 +2320,87 @@ else
 
 ---
 
-## 十、🟡 递归 / 边界坑
+### P4-7. 🆕🆕 **GUI 结构化输出面板的常见误用**
+
+**症状**：
+
+- 在 `llm_tool_v3` GUI 里勾选了"启用 Structured Output"，但生成的是自由文本
+- 或：附件 + schema 组合时，报告"当前 SDK 版本不支持"
+
+**根因**：
+
+- **误用 1**：连接的还是 `llm_service`（`ServerKind='service'`），SO 不生效。
+- **误用 2**：SDK 版本过旧（v3.9 及更早），没有组合方法。
+- **误用 3**：`SchemaMemo` 里填了"外层 envelope"而不是"schema 本体"。
+
+**正确做法**：
+
+**检查 1：服务端类型**
+
+```pascal
+if LLM.ServerKind = 'service' then
+begin
+  DoStatus('[WARN] llm_service 不支持 Structured Output');
+  DoStatus('        请改用 llm_proxy / llm_proxy_tool');
+  Exit;
+end;
+```
+
+**检查 2：SDK 版本**
+
+- `llm_client_v3.pas` **v3.10 或更高**才支持组合方法。
+- 编译时确认 App 描述字符串是 `'Dynamic LLM Client (v3.10)'`。
+
+**检查 3：SchemaMemo 的内容**
+
+`SchemaMemo` 里填**schema 本体**，即：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "detections": { ... }
+  },
+  "required": ["detections"],
+  "additionalProperties": false
+}
+```
+
+**不要**填外层包装：
+```json
+// ❌ 错误：这是 response_format 的外层
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "object_detection",
+    "strict": true,
+    "schema": { ... }
+  }
+}
+```
+
+**GUI 的 workflow（v3.4）**：
+
+1. 连接 → `llm_proxy` / `llm_proxy_tool`
+2. 切到"结构化输出"页 → 点"加载检测器模板"
+3. 勾选"启用 Structured Output" + "strict"
+4. 切到"输入"页 → 添加图片
+5. 点"生成"
+
+**底层自动分流**（`DoGenerateWithCurrentSettings`）：
+
+| 有 schema | 有附件 | 走的 API |
+|:---------:|:------:|---------|
+| ✅ | ✅ | `GenerateWithAttachmentsAndSchema` |
+| ✅ | ❌ | `GenerateWithJsonSchema` |
+| ❌ | ✅ | `GenerateWithAttachments` |
+| ❌ | ❌ | `Generate` |
+
+**AI 检索关键词**：`GUI 结构化输出`、`SchemaMemo 内容`、`llm_tool_v3`、`DoGenerateWithCurrentSettings`。
+
+---
+
+## 十一、🟡 递归 / 边界坑
 
 ### P5-1. **递归追加输出可能栈溢出**
 
@@ -1453,7 +2487,7 @@ end;
 
 ---
 
-## 十一、坑的优先级矩阵
+## 十二、坑的优先级矩阵
 
 ```mermaid
 quadrantChart
@@ -1482,11 +2516,25 @@ quadrantChart
     var/out冲突: [0.75, 0.65]
     中文编码: [0.55, 0.80]
     FormClose顺序: [0.60, 0.85]
+    llm_service不支持SO: [0.85, 0.85]
+    response_format被丢弃: [0.70, 0.85]
+    json_schema嵌套两层: [0.75, 0.80]
+    strict字符串: [0.60, 0.75]
+    additionalProperties缺失: [0.65, 0.70]
+    required不完整: [0.60, 0.70]
+    oneOf不支持: [0.55, 0.75]
+    图片+schema无方法: [0.75, 0.60]
+    坐标未归一化: [0.80, 0.85]
+    confidence超界: [0.60, 0.55]
+    schema太复杂: [0.50, 0.70]
+    后端版本过旧: [0.40, 0.85]
+    模型不支持SO: [0.45, 0.85]
+    tool_calls与SO冲突: [0.70, 0.80]
 ```
 
 ---
 
-## 十二、AI 检索速查表
+## 十三、AI 检索速查表
 
 | 症状关键词 | 对应坑 |
 |-----------|--------|
@@ -1515,6 +2563,7 @@ quadrantChart
 | 无法重试 | P4-4 按钮禁用 |
 | **新的 system prompt 不生效** | **P4-5 new_session 实现** |
 | **set_system_message 报错** | **P4-6 温和失败 / P6-3** |
+| **GUI 结构化输出面板误用** | **P4-7 SchemaMemo 内容** |
 | 大 chunk 崩 | P5-1 递归栈溢 |
 | 边界崩溃 | P5-2 buffer 空 |
 | **gzip / 压缩 / Accept-Encoding** | **P6-1 identity header** |
@@ -1528,10 +2577,25 @@ quadrantChart
 | **🆕 客户端发图片后端不认** | **P8-1 后端非 VLM** |
 | **🆕 多模态在工具循环中重复发送** | **P8-2 缺历史占位符** |
 | **🆕 客户端发图片给 `llm_service`** | **P8-3 不支持多模态，改路径** |
+| **🆕🆕 `llm_service` 不支持 SO** | **P9-1** |
+| **🆕🆕 `response_format` 被静默丢弃** | **P9-2 passthrough 白名单** |
+| **🆕🆕 `unrecognized type json_schema`** | **P9-3 嵌套两层** |
+| **🆕🆕 `strict` 严格模式不生效** | **P9-4 字符串而非布尔** |
+| **🆕🆕 `additionalProperties` 缺失** | **P9-5 每个 object 都要加** |
+| **🆕🆕 模型省略必填字段** | **P9-6 required 不完整** |
+| **🆕🆕 `oneOf` / `unsupported keyword`** | **P9-7 不支持的关键字** |
+| **🆕🆕 图片 + schema 组合报错** | **P9-8 升级到 SDK v3.10** |
+| **🆕🆕 bbox 坐标不对** | **P9-9 归一化 / 顺序 / 上下** |
+| **🆕🆕 confidence 是 95 而非 0.95** | **P9-10 客户端做兼容** |
+| **🆕🆕 schema 编译失败 / 超时** | **P9-11 简化 schema** |
+| **🆕🆕 后端 400 但 schema 看起来对** | **P9-12 后端版本过旧** |
+| **🆕🆕 返回纯文本而非 JSON** | **P9-13 模型不支持 SO** |
+| **🆕🆕 LTB 有 SO 时工具不执行** | **P9-14 tool_calls 与 SO 冲突** |
+| **🆕🆕 多轮工具链循环第二轮不带 SO** | **P9-15 每轮都带 SO 冲突** |
 
 ---
 
-## 十三、跨语言一致性检查清单
+## 十四、跨语言一致性检查清单
 
 写完任一语言的客户端，**上线前必查**：
 
@@ -1561,7 +2625,17 @@ flowchart TB
     C11 -->|否| F11["❌ 改用 VLM 后端"]
     C11 -->|是| C12{"🆕 图片附件<br/>组装正确?"}
     C12 -->|否| F12["❌ 修改"]
-    C12 -->|是| PASS["✅ 通过"]
+    C12 -->|是| C13{"🆕🆕 SO 请求<br/>服务端是 proxy?"}
+    C13 -->|否| F13["❌ 改用 llm_proxy / LTB"]
+    C13 -->|是| C14{"🆕🆕 schema 结构<br/>正确（无嵌套）?"}
+    C14 -->|否| F14["❌ 修改 schema"]
+    C14 -->|是| C15{"🆕🆕 strict 是布尔值?"}
+    C15 -->|否| F15["❌ 改 true 而不是 'true'"]
+    C15 -->|是| C16{"🆕🆕 每个 object 都有<br/>additionalProperties:false?"}
+    C16 -->|否| F16["❌ 补全"]
+    C16 -->|是| C17{"🆕🆕 图片 + schema<br/>用 v3.10 组合方法?"}
+    C17 -->|否| F17["❌ 升级 SDK / 用新方法"]
+    C17 -->|是| PASS["✅ 通过"]
 
     style PASS fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
     style F1 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
@@ -1576,11 +2650,16 @@ flowchart TB
     style F10 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style F11 fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
     style F12 fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
+    style F13 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style F14 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style F15 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style F16 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style F17 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
 ```
 
 ---
 
-## 十四、三条铁律
+## 十五、三条铁律
 
 ```mermaid
 mindmap
@@ -1607,7 +2686,7 @@ mindmap
 
 ---
 
-## 十五、v3 架构变化的坑点概览
+## 十六、v3 架构变化的坑点概览
 
 ```mermaid
 flowchart LR
@@ -1624,23 +2703,40 @@ flowchart LR
         B3["历史占位符"]
     end
 
+    subgraph V310["v3.10 新增坑（P9）"]
+        C1["Structured Output"]
+        C2["response_format 转发"]
+        C3["图片 + schema 组合"]
+        C4["JSON Schema 约束"]
+    end
+
     V2 --> FULL["完整坑点体系"]
     V3 --> FULL
+    V310 --> FULL
 
     style V2 fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style V3 fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
+    style V310 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
     style FULL fill:#0D2F52,stroke:#000000,stroke-width:4px,color:#FFFFFF
 ```
 
 **v3 的坑点核心**：
 
-- **`llm_service` 的能力边界**：不支持多模态，客户端应改用 `llm_proxy` / LTB
+- **`llm_service` 的能力边界**：不支持多模态 + **不支持 Structured Output**，客户端应改用 `llm_proxy` / LTB
 - **多模态由后端决定**：`llm_proxy` / LTB **原样转发**，是否支持取决于后端
 - **多模态 + 工具循环的组合**：图片只影响首轮，后续用历史占位符
 
+**v3.10 的坑点核心**：
+
+- **`response_format` 转发**：`llm_proxy` / LTB 的 passthrough 白名单必须包含 `response_format`
+- **JSON Schema 子集**：只支持一部分 JSON Schema 关键字（无 `oneOf` / `allOf` / `not` 等）
+- **严格模式 5 要求**：`strict: true`（布尔值） + `additionalProperties: false` + `required` 完整 + 无嵌套 `json_schema`
+- **图片 + schema 组合**：v3.10 起有单一方法（`GenerateWithImageFileAndSchema`），不要再手写组合
+- **工具 vs SO 冲突**：`tools` 和 `response_format` 竞争，需分开调用或特殊处理
+
 ---
 
-## 十六、AI 接手建议
+## 十七、AI 接手建议
 
 如果你是**第一次接手本项目**，按以下顺序读代码：
 
@@ -1649,15 +2745,17 @@ flowchart LR
     R1["1. 本文档"] --> R2["2. llm_service.py<br/>看 worker 线程模型"]
     R2 --> R3["3. llm_proxy.py<br/>看传输层与无状态语义"]
     R3 --> R4["4. llm_proxy_tool.py<br/>看 LTB 工具循环 + 多模态转发"]
-    R4 --> R5["5. llm_test.py<br/>看客户端交互模式"]
-    R5 --> R6["6. Pascal 客户端<br/>看跨语言对齐"]
+    R4 --> R5["5. llm_common/sse_client.py<br/>看 passthrough 白名单"]
+    R5 --> R6["6. llm_client_v3.pas<br/>看 SO 4 个入口"]
+    R6 --> R7["7. llm_test.py<br/>看客户端交互模式"]
 
     style R1 fill:#922B21,stroke:#5A1A14,stroke-width:4px,color:#FFFFFF
     style R2 fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style R3 fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
     style R4 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
-    style R5 fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
-    style R6 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style R5 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style R6 fill:#B7791F,stroke:#7E5109,stroke-width:4px,color:#FFFFFF
+    style R7 fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
 ```
 
 **重点关注**：
@@ -1668,9 +2766,13 @@ flowchart LR
 4. `llm_proxy_tool.py` 的 `LLMProxyToolService.start()`（预连接 middleware 顺序）
 5. `llm_proxy_tool.py` 的 `_run_generation`（多轮 tool_calls 循环与上限）
 6. `llm_proxy_tool.py` 的多模态历史占位符处理
-7. Pascal 客户端的 `OnLLMStream`（协议入口）
-8. Pascal 客户端的 `CleanupPartialConnect`（资源安全）
-9. GUI 窗体的 `new_session_ButtonClick`（system prompt 生效入口）
+7. **`llm_common/sse_client.py` 的 `_FORWARDED_PASSTHROUGH_KEYS`（含 `response_format`）**
+8. **`llm_proxy.py` / `llm_proxy_tool.py` 的 `sanitize_options`（passthrough 白名单）**
+9. **`llm_client_v3.pas` 的 `GenerateWithImageFileAndSchema` / `BuildImageAttachmentFromFile` / `BuildSchemaResponseFormatJson` / `SendGenerateCombined`**
+10. Pascal 客户端的 `OnLLMStream`（协议入口）
+11. Pascal 客户端的 `CleanupPartialConnect`（资源安全）
+12. GUI 窗体的 `new_session_ButtonClick`（system prompt 生效入口）
+13. **GUI 窗体的 `DoGenerateWithCurrentSettings`（4 种组合分流）**
 
 **不要碰**（除非明确要改）：
 
@@ -1680,6 +2782,8 @@ flowchart LR
 - `http.client` 流式读取循环
 - `Accept-Encoding: identity` 与 `TCP_NODELAY`
 - `LLMProxyToolService.start()` 中预连接 middleware 的**顺序**
+- **`_FORWARDED_PASSTHROUGH_KEYS` 中的 key 列表**
+- **`BuildSchemaResponseFormatJson` 的 envelope 结构**（改动影响 4 个公开方法）
 
 **关键认知**：
 
@@ -1689,10 +2793,12 @@ flowchart LR
 - 三者都是 LingoFuse 服务端，客户端不需要任何代码改动就能切换
 - `llm_proxy_tool.py` 与 `mcp_api_tool.py` **可以同时运行**（不同 `reg_agent` 名）
 - **多模态**由后端决定——`llm_proxy` / LTB **原样转发**，`llm_service` **不支持**
+- **Structured Output** 由后端决定——`llm_proxy` / LTB **原样转发**，`llm_service` **不支持**
+- **SO 严格模式 5 要求**：`strict: true` + `additionalProperties: false` + `required` 完整 + 无嵌套 `json_schema` + 不用 `oneOf` / `allOf` / `not`
 
 ---
 
-## 十七、相关文档（同目录）
+## 十八、相关文档（同目录）
 
 | 文档 | 说明 |
 |------|------|
@@ -1702,6 +2808,7 @@ flowchart LR
 | [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册 |
 | [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 250+ OpenAI 兼容后端清单 |
 | [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
+| [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档（**含 §16 Structured Output**） |
 
 ### 根目录相关文档
 
@@ -1709,11 +2816,15 @@ flowchart LR
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
 | [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
+| [`../Structured_Output_Learning_Guide.md`](../Structured_Output_Learning_Guide.md) | **Structured Output 完整学习指南** |
 
 > **归属提醒**：`llm_client.pas`、`llm_tool_frm.pas` 等 **Pascal GUI 客户端源码**属于 **LingoFuse 核心仓库**（[github.com/PassByYou888/LingoFuse](https://github.com/PassByYou888/LingoFuse)），不在本仓库中。
+>
+> **`llm_client_v3.pas`**、**`llm_tool_v3_frm.pas`**、**`llm_tool_v3.lpi`** 属于**本仓库**。
 
 ---
 
-**文档版本**：v4.0（v3 架构重写版——新增 P8 系列多模态转发坑，更新文档索引，移除已删除文档链接）  
-**维护者**：LingoFuse-pasAgent 团队  
+**文档版本**：v5.0（v3 架构重写版 + Structured Output 合并版——新增 P9 系列 15 条 Structured Output 坑、更新通用踩坑地图、优先级矩阵、AI 检索速查表、跨语言一致性检查清单、v3 架构变化概览、相关文档索引）
+
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
