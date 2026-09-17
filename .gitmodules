@@ -1,0 +1,3 @@
+[submodule "zCore"]
+	path = zCore
+	url = https://github.com/PassByYou888/zCore.git
