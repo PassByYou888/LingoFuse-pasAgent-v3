@@ -1,15 +1,16 @@
 # LingoFuse LLM 生态体系使用指南
 
-> **文档版本**：v5.0（v3 架构重写版）
+> **文档版本**：v5.1（v3 架构重写版 · 能力边界修正版）
 > **最后更新**：2026-09-17
-> **适用组件**：`mcp_api_tool`、`llm_proxy_tool`、`llm_proxy`、`llm_client`、`llm_service`
+> **适用组件**：`mcp_api_tool`、`llm_proxy_tool`、`llm_proxy`、`llm_client_v3`、`llm_service`
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) — LTB 命令行手册
 > - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) — 纯转发代理手册
-> - [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) — 后端兼容清单
+> - [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) — 250+ 后端兼容清单
 > - [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) — 本地推理服务手册
 > - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
 > - [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) — 版本演进
+> - [`llm_client_v3.md`](llm_client_v3.md) — Pascal 客户端 SDK 文档
 > - [`pascal_agent_api_ref_json.md`](pascal_agent_api_ref_json.md) — `agent_main` / `register_agent` JSON 详解
 > - [`lingofuse/Bridge_User_Guide.md`](lingofuse/Bridge_User_Guide.md) — HTTP 桥接网关
 
@@ -38,19 +39,21 @@ v3 的定位不同于 v2：
 
 | 维度 | v2 | v3 |
 |------|:--:|:--:|
-| **核心叙事** | 三种服务端（`llm_service` / `llm_proxy` / `llm_proxy_tool`） | **四大应用组件** + 一个辅助工具 |
-| **`llm_service`** | 三种服务端之一（核心） | 辅助验证工具（可嵌入） |
-| **多模态** | ❌ 不支持 | ✅ **架构级能力** |
+| **核心叙事** | 三种服务端（`llm_service` / `llm_proxy` / `llm_proxy_tool`） | **四大核心应用组件** + 一个辅助工具 |
+| **`llm_service`** | 三种服务端之一（核心） | **辅助验证工具**（可嵌入，**纯文本**） |
+| **多模态** | ❌ 不支持 | ✅ **架构级能力**（由 `llm_proxy` / LTB 转发到 VLM 后端） |
 | **仓库** | `LingoFuse-pasAgent` | `LingoFuse-pasAgent-v3`（独立开仓） |
 
 > **v3 与 v2 的关系**：v3 是 v2 的**平行分支**。v2 仍然可用、仍然维护；v3 面向**多模态协作**场景。
+>
+> **`llm_service` 的角色变化**：v2 中它是"三种服务端之一"，v3 中它**降级为辅助验证工具**。它仍然是**纯文本**推理服务——**不支持多模态**，这一边界在 v3 中保持不变。
 
 ### 图 1：生态全景（客户端 / 应用组件 / 信标 / 后端）
 
 ```mermaid
 flowchart TB
     subgraph CLIENTS["🖥️ 客户端"]
-        A1["🅿️ Pascal 客户端<br/>llm_client.pas"]
+        A1["🅿️ Pascal 客户端<br/>llm_client_v3.pas"]
         A2["🌍 任意 LingoFuse 客户端"]
         A3["🤖 AI 客户端<br/>LM Studio / Claude / ..."]
     end
@@ -58,12 +61,12 @@ flowchart TB
     subgraph APPS["🎯 四大核心应用组件"]
         C1["🌉 mcp_api_tool<br/>MCP 协议网关"]
         C2["🔴 llm_proxy_tool<br/>LLM 工具桥（LTB）"]
-        C3["🟣 llm_proxy<br/>纯文本转发"]
-        C4["📦 llm_client<br/>Pascal SDK"]
+        C3["🟣 llm_proxy<br/>纯文本转发（多模态转发）"]
+        C4["📦 llm_client_v3<br/>Pascal SDK"]
     end
 
     subgraph AUX["🛠️ 辅助工具"]
-        S1["🟢 llm_service<br/>本地推理 + 验证"]
+        S1["🟢 llm_service<br/>本地推理（纯文本）+ 验证"]
     end
 
     subgraph CORE["⚡ LingoFuse 服务网格"]
@@ -74,7 +77,8 @@ flowchart TB
         D1["LM Studio / Ollama"]
         D2["vLLM / SGLang / TGI"]
         D3["DeepSeek / OpenRouter<br/>Groq / 智谱 / Moonshot"]
-        D4["📦 本地 GGUF 模型"]
+        D4["📦 本地 GGUF 模型<br/>（纯文本）"]
+        D5["👁️ VLM 后端（LM Studio 等）<br/>+ mmproj"]
     end
 
     A1 --> C4
@@ -88,13 +92,15 @@ flowchart TB
     C3 --> B1
     C4 --> B1
 
+    C2 -.->|"HTTP SSE<br/>（含多模态转发）"| D5
     C2 -.->|"HTTP SSE"| D1
     C2 -.->|"HTTP SSE"| D2
     C2 -.->|"HTTPS SSE"| D3
+    C3 -.->|"HTTP SSE<br/>（含多模态转发）"| D5
     C3 -.->|"HTTP SSE"| D1
     C3 -.->|"HTTP SSE"| D2
     C3 -.->|"HTTPS SSE"| D3
-    S1 -.->|"加载"| D4
+    S1 -.->|"加载（纯文本）"| D4
 
     style CLIENTS fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style APPS fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
@@ -147,11 +153,13 @@ mindmap
     llm_proxy
       纯文本转发代理
       无状态
-      129+ 后端兼容
-    llm_client
+      250+ 后端兼容
+      多模态转发到 VLM 后端
+    llm_client_v3
       Pascal 客户端 SDK
       兼容 Delphi 7+ 和 FPC 3.0+
       能力发现 + 流式回调
+      GUI 演示 llm_tool_v3
 ```
 
 ### 2.1 `mcp_api_tool` —— MCP 协议网关（路径 A）
@@ -177,14 +185,15 @@ mindmap
 | **工具执行位置** | **服务端侧**——LTB 内部完成多轮 tool_calls 循环 |
 | **适用客户端** | **任何** LingoFuse 客户端（不要求支持 MCP） |
 | **关键依赖** | `language_middleware`、信标、OpenAI 兼容后端 |
-| **共存规则** | 与 `mcp_api_tool` 可共存；与 `llm_proxy` / `llm_service` **不能**同时运行（共享端点） |
+| **共存规则** | 与 `mcp_api_tool` **可共存**；与 `llm_proxy` / `llm_service` **默认共享端点**，需改 `--endpoint` + `--app-name` 才能共存 |
+| **多模态** | ✅ **原样转发**图片附件到后端 |
 
 **核心特征**：
 - **客户端零改动**——只知道 `generate` / `create_session` / `close_session` 等基础 API
 - 工具调用、结果回填、多轮循环全部在 LTB 内部完成
 - **四重上限**保护：轮次 / 总调用数 / 单结果长度 / 总结果长度
 - 工具不可用时**自动降级**为纯文本代理
-- 后端必须支持 `tool_calls`（Function Calling）
+- 后端必须支持 `tool_calls`（Function Calling）才能使用工具能力
 
 **详细文档** → [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)
 
@@ -194,24 +203,27 @@ mindmap
 |------|------|
 | **角色** | 无状态转发器，把 LingoFuse RPC 翻译成 OpenAI 兼容 HTTP |
 | **适用场景** | 只需对话，**不需要工具** |
-| **后端兼容** | **129+ OpenAI 兼容后端** |
+| **后端兼容** | **250+ OpenAI 兼容后端** |
 | **`set_system_message`** | **明确拒绝**（无状态语义下无法实现） |
+| **多模态** | ✅ **原样转发**图片附件到后端（是否支持取决于后端） |
 
 **核心特征**：
 - 每轮请求**重建** messages 数组，服务端**不持有** KV cache
-- 支持 **129+ 后端**（LM Studio / Ollama / vLLM / DeepSeek / OpenRouter / Groq / 智谱 / Moonshot / …）
+- 支持 **250+ 后端**（LM Studio / Ollama / vLLM / DeepSeek / OpenRouter / Groq / 智谱 / Moonshot / …）
 - 客户端代码一行不改，切换后端只改 `--backend-url`
 
 **详细文档** → [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md)
+**兼容性清单** → [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md)
 
-### 2.4 `llm_client` —— Pascal 客户端 SDK
+### 2.4 `llm_client_v3` —— Pascal 客户端 SDK
 
 | 属性 | 说明 |
 |------|------|
 | **角色** | Pascal 客户端 SDK，直接与 LingoFuse LLM 服务对话 |
+| **源码位置** | **本仓库 `src\llm_client_v3.pas`** |
+| **GUI 演示** | **`src\llm_tool_v3.lpi`**（完整可运行的多会话客户端） |
 | **编译器兼容** | **Delphi 7+** 和 **Free Pascal 3.0+** |
 | **Python 版本** | ❌ **不提供**——Python 天生能接智能体生态，不需要绕道 |
-| **源码位置** | LingoFuse 核心仓库 |
 
 **核心特征**：
 - 事件驱动：`OnChunk` / `OnThink` / `OnFinish` / `OnError` / `OnClosed`
@@ -219,7 +231,8 @@ mindmap
 - 会话过滤：`FActiveSessionId` 防止多会话串台
 - 资源安全：`CleanupPartialConnect` 保证失败路径也释放资源
 
-**详细文档** → [`Pascal_Integration_Guide.md`](../../Pascal_Integration_Guide.md)
+**详细文档** → [`llm_client_v3.md`](llm_client_v3.md)
+**开发者切入指南** → [`../../Pascal_Integration_Guide.md`](../../Pascal_Integration_Guide.md)
 
 ---
 
@@ -233,20 +246,23 @@ mindmap
 |------|------|
 | **角色** | 本地推理服务 + 模型验证工具 |
 | **核心价值** | **可以脱离 pasAgent 生态单独使用**——作为你项目里的"本地 LLM 小工具" |
+| **能力边界** | ⚠️ **纯文本**——**不支持多模态**（本地 VLM 路径未实现） |
 | **适用场景** | 断网环境 / 隐私敏感 / 快速验证模型 / 深度嵌入 |
 
 ### 3.2 独特之处
 
-**可嵌入**：你可以在自己的 Pascal 项目里只引入 `llm_service` + `llm_client`，就得到一个完全离线的"AI 助手"模块——不需要信标、不需要工具提供者、不需要 MCP。
+**可嵌入**：你可以在自己的 Pascal 项目里只引入 `llm_service` + `llm_client_v3`，就得到一个完全离线的"AI 助手"模块——不需要信标、不需要工具提供者、不需要 MCP。
 
 ```mermaid
 flowchart LR
     A["🖥️ 你的 Pascal 项目"] -->|"LingoFuse RPC"| B["🟢 llm_service"]
-    B -->|"加载"| C["📦 本地 GGUF 模型"]
+    B -->|"加载"| C["📦 本地 GGUF 模型<br/>（纯文本）"]
+    D["❌ 不支持图片"] -.->|"图片请求被拒绝"| B
 
     style A fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style B fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
     style C fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style D fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
 ```
 
 ### 3.3 典型用途
@@ -256,7 +272,16 @@ flowchart LR
 | **离线环境** | 内网、无外网访问的工业现场 |
 | **隐私敏感** | 数据不能出本地，必须全程离线 |
 | **快速验证** | 检验某个 GGUF 模型是否适合你的任务 |
-| **嵌入自研项目** | 只引入 `llm_service` + `llm_client`，作为你的"AI 助手"模块 |
+| **嵌入自研项目** | 只引入 `llm_service` + `llm_client_v3`，作为你的"AI 助手"模块 |
+| **纯文本对话** | 日常问答、文本处理、代码生成 |
+
+### 3.4 明确不支持的功能
+
+| 功能 | 状态 | 替代方案 |
+|------|:----:|----------|
+| 图片问答 | ❌ | 用 `llm_proxy` / `llm_proxy_tool` 转发到 VLM 后端 |
+| 语音输入 / 输出 | ❌ | 使用外部合规 ASR / TTS 服务 |
+| 服务端工具执行 | ❌ | 用 `llm_proxy_tool`（LTB） |
 
 > 💡 **生产环境推荐**：用 `llm_proxy` / `llm_proxy_tool` 转发到 LM Studio 等成熟后端。`llm_service` 是**验证和嵌入**场景的首选。
 
@@ -342,6 +367,8 @@ stateDiagram-v2
 
 **最后一轮强制不带 tools**——保证循环终止。
 
+> **多模态与工具循环的组合**：图片只在**首轮**发送完整内容；后续工具调用轮次使用**历史占位符**（如 `[image: chart.png]`），避免 token 爆炸。详见第五章。
+
 ### 4.3 两条路径共存
 
 ```mermaid
@@ -382,20 +409,20 @@ flowchart TB
 
 ## 五、多模态能力
 
-**多模态（Multimodal）是 v3 的核心能力**。它让 LingoFuse LLM 服务能处理**多种输入模态**——文字、图片——而不仅仅是纯文本。
+**多模态（Multimodal）是 v3 的核心能力**。它让 LingoFuse LLM 生态能处理**多种输入模态**——文字、图片——而不仅仅是纯文本。
+
+> ⚠️ **重要边界**：多模态能力**由后端决定**。`llm_proxy` / LTB 只是**原样转发**图片附件；`llm_service` **完全不支持多模态**。
 
 ### 5.1 什么是多模态
 
-传统 LLM 服务端只能处理文字。多模态架构让服务端能同时理解：
+传统 LLM 服务端只能处理文字。多模态架构让客户端能同时请求：
 
 | 模态 | 说明 |
 |------|------|
 | **文字** | 用户提问、系统提示、多轮历史 |
 | **图片** | 图表、截图、照片、扫描件 |
 
-### 5.2 能力层面表述
-
-**多模态在 LingoFuse 生态中的定位**：
+### 5.2 能力层面表述（**核心边界表**）
 
 ```mermaid
 flowchart TB
@@ -407,39 +434,59 @@ flowchart TB
     B2 --> C1
     B3 --> C1
 
-    C1 --> D["客户端通过<br/>统一协议请求"]
+    C1 --> D1["llm_proxy / LTB 转发<br/>到 VLM 后端"]
+    C1 --> D2["llm_service<br/>❌ 不支持"]
+
+    D1 --> E1["✅ 后端决定是否支持"]
+    D2 --> E2["❌ 返回 code: -1"]
 
     style A fill:#0D2F52,stroke:#000000,stroke-width:5px,color:#FFFFFF
     style B1 fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
     style B2 fill:#8E44AD,stroke:#5B2C6F,stroke-width:3px,color:#FFFFFF
     style B3 fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
     style C1 fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
-    style D fill:#922B21,stroke:#5A1A14,stroke-width:4px,color:#FFFFFF
+    style D1 fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
+    style D2 fill:#922B21,stroke:#5A1A14,stroke-width:4px,color:#FFFFFF
+    style E1 fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
+    style E2 fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#5A1A14
 ```
 
 ### 5.3 客户端视角
 
 客户端通过 `generate` 请求携带多模态内容。不同客户端的支持程度不同：
 
-| 客户端 | 多模态支持 |
-|--------|:----------:|
-| `llm_client`（Pascal SDK） | 通过 API 参数携带 |
-| 自研客户端（LingoFuse RPC） | 通过 API 参数携带 |
-| MCP 客户端（路径 A） | 由 MCP 协议 + 客户端自身支持决定 |
-| 纯文本客户端 | 仅文字 |
+| 客户端 | 多模态支持 | 说明 |
+|--------|:----------:|------|
+| `llm_client_v3.pas` | ✅ 通过 API 参数携带 | `GenerateWithAttachments` / `GenerateWithImageFile` |
+| 自研客户端（LingoFuse RPC） | ✅ 通过 API 参数携带 | 需遵循 `attachments` 数组格式 |
+| MCP 客户端（路径 A） | ⚠️ 由 MCP 协议 + 客户端自身支持决定 | 不同 MCP 客户端支持程度不同 |
+| 纯文本客户端 | ❌ 仅文字 | — |
 
 ### 5.4 能力声明
 
-多模态能力通过**能力矩阵**声明。客户端可在运行时通过 `get_api_capabilities` 查询服务端支持哪些模态。详见第七章。
+多模态能力通过**能力矩阵**声明。客户端可在运行时通过 `get_api_capabilities` 查询服务端支持哪些模态：
+
+| 服务端 | `vision` 字段 | 说明 |
+|--------|:------------:|------|
+| `llm_service` | **0** | **不支持**（本地 VLM 路径未实现） |
+| `llm_proxy` | 取决于后端（**固定为 0**） | 服务端自身不做视觉处理；转发由后端决定 |
+| `llm_proxy_tool` | 取决于后端（**固定为 0**） | 同上 |
+
+> **关键点**：`llm_proxy` / LTB 的 `vision` 字段**固定为 0**——因为代理**自身不解析图片**，它只是转发者。图片能否被理解，**由后端决定**（后端有 VLM 就能处理，没有就会被忽略或报错）。详见第六章。
 
 ### 5.5 与其他能力的组合
 
 多模态能力与工具执行路径**正交**：
 
-- **路径 A + 多模态**：MCP 客户端自己携带图片（如果客户端支持）
-- **路径 B + 多模态**：LTB 转发多模态请求到后端（后端需支持多模态）
+- **路径 A + 多模态**：MCP 客户端自己携带图片（**如果**客户端支持，且后端支持）
+- **路径 B + 多模态**：LTB 转发多模态请求到后端（**后端需支持**）
+- **本地推理 + 多模态**：❌ **不支持**——`llm_service` 是纯文本服务
 
-> 📖 多模态的具体参数、请求格式、路由机制，请参考 [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md)。
+> 📖 多模态的具体参数、请求格式、后端配置，请参考：
+> - [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)
+> - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) 第 5.5 节
+> - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) 第 4.5 节
+> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8 系列
 
 ---
 
@@ -451,7 +498,8 @@ LingoFuse 生态有**多个应用组件**，功能集不同：
 
 - `llm_proxy` / `llm_proxy_tool` **不支持** `set_system_message`
 - `llm_service` **支持** `set_system_message`
-- 只有 `llm_service` 支持多模态（视具体版本）
+- 只有 `llm_service` 提供"进程内的本地推理"
+- **多模态能力不属于服务端**——由后端决定
 
 客户端需要一种机制**发现当前运行的服务端支持什么**，从而避免发出无效请求。
 
@@ -471,12 +519,18 @@ LingoFuse 生态有**多个应用组件**，功能集不同：
     "list_sessions": 1,
     "set_system_message": 0,
     "health": 1,
-    "llm_stream": 1
+    "llm_stream": 1,
+    "attachments": 1,
+    "vision": 0
   }
 }
 ```
 
 **值语义**：`1` = 支持，`0` = 不支持。缺失条目按 `0` 处理。
+
+> **注意**：`attachments=1` 表示**服务端接受附件字段**（不会拒绝请求），**不表示服务端能理解图片**。图片能否被理解，由**后端**决定。
+>
+> `vision=0` 在所有 LingoFuse LLM 服务端上**固定为 0**——因为服务端只做转发，不做视觉处理。
 
 ### 6.3 三种服务端的差异
 
@@ -490,12 +544,17 @@ LingoFuse 生态有**多个应用组件**，功能集不同：
 | **`set_system_message`** | **1** | **0** | **0** |
 | `health` | 1 | 1 | 1 |
 | `llm_stream` | 1 | 1 | 1 |
+| `attachments` | 1 | 1 | 1 |
+| **`vision`** | **0** | **0** | **0** |
 | **`tools`** | — | — | **1** |
 | **`tool_calls`** | — | — | **1** |
 | **`tool_results`** | — | — | **1** |
 | `server_kind` | `service` | `proxy` | `proxy` |
 
-> **注意**：`llm_proxy` 与 `llm_proxy_tool` 的 `server_kind` **都是** `"proxy"`。要区分二者，读 `tools` / `tool_calls` 等 LTB 特有字段。
+> **关键点**：
+> - `vision=0` 对**所有**服务端成立——它表达的是"服务端自身不做视觉处理"，而非"整个链路不支持多模态"。
+> - `llm_proxy` 与 `llm_proxy_tool` 的 `server_kind` **都是** `"proxy"`。要区分二者，读 `tools` / `tool_calls` 等 LTB 特有字段。
+> - `llm_service` 的 `set_system_message=1` 是它与两个代理的**唯一功能差异**。
 
 ### 6.4 客户端降级行为
 
@@ -624,13 +683,40 @@ flowchart LR
 .\llm_proxy.exe --backend-url http://127.0.0.1:1234/v1
 ```
 
-### 场景 4：本地验证模型
+### 场景 4：本地验证模型（纯文本）
 
 ```powershell
 .\llm_service.exe --model-path .\NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf
 ```
 
-### 场景 5：路径 A 与路径 B 共存
+> ⚠️ **注意**：`llm_service` **不支持多模态**。加载 Omni 主模型后只能做**纯文本**推理；若需图片问答，请改用 LTB + VLM 后端。
+
+### 场景 5：多模态图片问答（**v3 新增**）
+
+```mermaid
+flowchart LR
+    A["🖼️ 客户端携带图片"] -->|"generate + attachments"| B["🔴 llm_proxy_tool<br/>（或 llm_proxy）"]
+    B -->|"原样转发"| C["🔌 VLM 后端<br/>LM Studio + mmproj"]
+    C -->|"识别图片"| D["返回文字回答"]
+    D -.->|"chunk / think / finish"| B
+    B -.->|"流式事件"| A
+
+    style A fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
+    style B fill:#922B21,stroke:#5A1A14,stroke-width:4px,color:#FFFFFF
+    style C fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
+    style D fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+```
+
+**步骤**：
+
+1. 在 LM Studio 加载 **VLM（如 Qwen2-VL / Nemotron Omni + mmproj）**
+2. 启动 `llm_proxy_tool.exe --backend-url http://127.0.0.1:1234/v1 --backend-model "your-vlm-id"`
+3. 客户端（`llm_client_v3`）用 `GenerateWithImageFile` 发图
+4. LTB 转发到 VLM，返回识别结果
+
+**关键点**：**不要把图片发给 `llm_service`**——它会返回 `code: -1`。
+
+### 场景 6：路径 A 与路径 B 共存
 
 ```mermaid
 flowchart TB
@@ -660,7 +746,7 @@ flowchart TB
 
 **要点**：二者 `reg_agent` 名字不同，可同时运行，共享同一信标。
 
-### 场景 6：三种 LLM 服务端共存
+### 场景 7：三种 LLM 服务端共存
 
 ```mermaid
 flowchart TB
@@ -706,6 +792,9 @@ flowchart TB
 | **LTB 与 mcp_api_tool 同时启动冲突** | 二者 `reg_agent` 名字相同 | P7-2 |
 | **LTB 启动时报 `LF_PrepareDone returned 0`** | middleware 与 Server.start 竞争 | P7-3 |
 | **LTB 收到的 `tool_calls` 参数为空** | SSE 分片未按 `index` 拼接 `arguments` | P7-4 |
+| **客户端发图片但后端不认** | 后端非 VLM / `--backend-model` 未指向 VLM | P8-1 |
+| **多模态在工具循环中重复发送** | 缺历史占位符 | P8-2 |
+| **客户端把图片发给 `llm_service`** | `llm_service` 不支持多模态 | P8-3 |
 
 完整排查指南和所有坑的索引，请直接查阅 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md)。
 
@@ -720,6 +809,28 @@ flowchart TD
     style START fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style A fill:#D6EAF8,stroke:#1F618D,stroke-width:3px,color:#0D2F52
     style B fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#5A1A14
+```
+
+### 9.3 多模态排查
+
+```mermaid
+flowchart TD
+    START["图片问答不工作"] --> Q1{"连接目标?"}
+    Q1 -->|"llm_service"| X1["❌ 不支持多模态<br/>改用 llm_proxy / LTB"]
+    Q1 -->|"llm_proxy / LTB"| Q2{"后端是 VLM 吗?"}
+    Q2 -->|否| X2["❌ 加载 VLM<br/>（如 Qwen2-VL / Nemotron Omni + mmproj）"]
+    Q2 -->|是| Q3{"--backend-model 指向 VLM?"}
+    Q3 -->|否| X3["❌ 显式指定 --backend-model"]
+    Q3 -->|是| Q4{"附件格式正确?"}
+    Q4 -->|否| X4["❌ 检查 kind=image, data_b64 非空"]
+    Q4 -->|是| OK["✅ 应该工作"]
+
+    style START fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
+    style X1 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style X2 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style X3 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style X4 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style OK fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
 ```
 
 ---
@@ -754,24 +865,44 @@ mindmap
 | 文档 | 说明 |
 |------|------|
 | [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | 🔴 **LTB 命令行手册**（路径 B 核心） |
-| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 🟣 **纯转发代理命令行手册** |
-| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | **129+ 后端兼容清单**（LTB 亦适用） |
-| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 🟢 **本地推理服务命令行手册** |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | **踩坑大全**——症状 / 根因 / 正确做法 |
+| [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 🟣 **纯转发代理命令行手册**（含多模态转发） |
+| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | **250+ 后端兼容清单**（LTB 亦适用） |
+| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 🟢 **本地推理服务命令行手册**（纯文本） |
+| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | **踩坑大全**——症状 / 根因 / 正确做法（含 P8 多模态专项） |
 | [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
+| [`llm_client_v3.md`](llm_client_v3.md) | **Pascal 客户端 SDK 文档** |
 | [`pascal_agent_api_ref_json.md`](pascal_agent_api_ref_json.md) | `agent_main` / `register_agent` JSON 结构详解 |
 | [`lingofuse/Bridge_User_Guide.md`](lingofuse/Bridge_User_Guide.md) | HTTP 桥接网关使用指南 |
+| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含踩坑知识库） |
 
 ### 根目录相关文档
 
 | 文档 | 说明 |
 |------|------|
+| [`../readme.md`](../../readme.md) | 项目总览与四大核心应用组件 |
 | [`../Pascal_Integration_Guide.md`](../../Pascal_Integration_Guide.md) | **Pascal 开发者切入指南** |
-| [`../Build_Guide.md`](../../Build_Guide.md) | 编译指南 |
-| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
+| [`../Build_Guide.md`](../../Build_Guide.md) | 编译指南（含 `llm_client_v3` / `llm_tool_v3`） |
+| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署（**能力边界已修正**） |
+| [`../code_generate_mcp.md`](../code_generate_mcp.md) | 代码生成器使用手册（Pascal + Python 双输出） |
 
 ---
 
-**文档版本**：v5.0（v3 架构重写版——多模态核心叙事、四大应用组件、llm_service 降级为辅助）  
-**维护者**：LingoFuse-pasAgent 团队  
+## 十二、核心要点速记
+
+> 📌 **五句话记住本文档**：
+
+1. **四大核心应用组件**——`mcp_api_tool`（路径 A）/ `llm_proxy_tool`（LTB，路径 B）/ `llm_proxy`（纯转发）/ `llm_client_v3`（Pascal SDK）；`llm_service` 是**辅助验证工具**（纯文本）。
+2. **两条工具执行路径**——路径 A（客户端侧 MCP）/ 路径 B（服务端代管，**客户端零改动**）；二者可以共存。
+3. **多模态由后端决定**——`llm_proxy` / LTB **原样转发**图片附件；`llm_service` **不支持多模态**。`vision=0` 是**所有服务端的固定值**（表达"服务端自身不做视觉处理"）。
+4. **能力发现机制**——`get_api_capabilities` 让客户端在运行时知道服务端支持什么（`set_system_message` / `tools` / `attachments`）；不支持的能力本地短路，避免无效 RPC。
+5. **流式协议结构化**——`chunk` / `think` / `finish` / `error` / `closed`；客户端只读 `type` 字段。
+
+> 🎯 **记住这句话就够了**：
+>
+> **v3 的核心是"四大应用组件 + 两条工具执行路径 + 多模态转发"。`llm_service` 是纯文本辅助工具——图片问答请走 `llm_proxy` / LTB 转发到 VLM 后端。**
+
+---
+
+**文档版本**：v5.1（v3 架构重写版 · 能力边界修正版——明确 `llm_service` 不支持多模态、`vision=0` 的语义、`llm_client_v3` 命名、`250+` 兼容数、SDK 文档索引）
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
