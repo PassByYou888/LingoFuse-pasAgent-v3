@@ -1,7 +1,7 @@
 # LingoFuse LLM Tool Bridge (LTB) 命令行使用手册
 
 > **适用程序**：`llm_proxy_tool.exe`（Windows）/ `llm_proxy_tool`（Linux）
-> **文档版本**：v3.0（v3 架构重写版）
+> **文档版本**：v3.1（v3 架构重写版 · 多模态参数修正版）
 > **最后更新**：2026-09-17
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
@@ -57,7 +57,8 @@ flowchart TB
         B1["LingoFuse RPC ↔ HTTP 翻译"]
         B2["SSE 流式转发"]
         B3["多会话管理"]
-        B4["129+ 后端兼容"]
+        B4["250+ 后端兼容"]
+        B5["多模态转发（由后端决定）"]
     end
 
     subgraph DELTA["🔴 LTB 增量能力"]
@@ -87,9 +88,9 @@ LTB 与 `llm_service`、`llm_proxy`、`mcp_api_tool` 的关系如下：
 ```mermaid
 flowchart TB
     subgraph Siblings["三种 LLM 服务端（共享 ipc:llm_service，同时只能跑一个）"]
-        S1["🟢 llm_service<br/>本地推理"]
-        S2["🟣 llm_proxy<br/>无状态纯转发"]
-        S3["🔴 llm_proxy_tool<br/>转发 + 服务端工具执行"]
+        S1["🟢 llm_service<br/>本地推理（纯文本）"]
+        S2["🟣 llm_proxy<br/>无状态纯转发（多模态转发）"]
+        S3["🔴 llm_proxy_tool<br/>转发 + 服务端工具执行 + 多模态转发"]
     end
 
     subgraph Gateway["MCP 网关（独立运行）"]
@@ -105,6 +106,27 @@ flowchart TB
     style M1 fill:#D6EAF8,stroke:#1F618D,stroke-width:3px,color:#0D2F52
     style Beacon fill:#5B2C6F,stroke:#321640,stroke-width:3px,color:#FFFFFF
 ```
+
+**能力矩阵对比**：
+
+| API | `llm_service` | `llm_proxy` | `llm_proxy_tool`（LTB） |
+|-----|:-------------:|:-----------:|:----------------------:|
+| `generate` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `create_session` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `close_session` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `cancel_session` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `list_sessions` | ✅ 1 | ✅ 1 | ✅ 1 |
+| **`set_system_message`** | ✅ **1** | ❌ **0** | ❌ **0** |
+| `health` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `llm_stream` | ✅ 1 | ✅ 1 | ✅ 1 |
+| `attachments` | ✅ 1 | ✅ 1 | ✅ 1 |
+| **`vision`** | **0** | **0** | **0** |
+| **`tools`** / **`tool_calls`** / **`tool_results`** | — | — | ✅ **1** |
+| **`server_kind`** | `service` | `proxy` | `proxy` |
+
+> **关于 `vision=0`**：三个服务端的 `vision` 字段**都固定为 0**——表达的是"**服务端自身不做视觉处理**"，而非"整个链路不支持多模态"。`llm_proxy` / LTB 只是**转发者**，图片能否被理解由**后端**决定。
+>
+> **关于 `server_kind`**：`llm_proxy` 与 `llm_proxy_tool` 的 `server_kind` **都是** `"proxy"`。要区分二者，读 `tools` / `tool_calls` 等 LTB 特有字段。
 
 **共存规则**：
 
@@ -123,14 +145,16 @@ flowchart LR
         C1["--endpoint / --app-name / --notify-api"]
         C2["--backend-url / --backend-model / --backend-key 等"]
         C3["--max-sessions / --max-history / --session-timeout"]
-        C4["--log-level"]
+        C4["--vision / --no-vision"]
+        C5["--log-level"]
     end
 
     subgraph LTBOnly["LTB 独有参数"]
         L1["--enable-tools / --no-tools"]
         L2["--mcp-endpoint / --mcp-reg-agent-app 等"]
         L3["--max-tool-rounds / --max-total-tool-calls 等"]
-        L4["--max-tool-result-chars 等"]
+        L4["--max-history-chars"]
+        L5["--max-tool-result-chars 等"]
     end
 
     style Common fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
@@ -169,7 +193,7 @@ flowchart LR
 ```powershell
 .\llm_proxy_tool.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m" `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" `
   --mcp-reg-agent-app llm_proxy_agent `
   --mcp-tool-provider-app agent_main_app
 ```
@@ -179,14 +203,14 @@ flowchart LR
 ```bash
 ./llm_proxy_tool \
   --backend-url http://127.0.0.1:1234/v1 \
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m" \
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" \
   --mcp-reg-agent-app llm_proxy_agent \
   --mcp-tool-provider-app agent_main_app
 ```
 
-### 图 5：启动后的状态横幅（示例）
+### 图 5：启动后的状态横幅（与源码字段一致）
 
-```
+```text
 ======================================================================
  LINGOFUSE LLM PROXY TOOL BRIDGE (LTB)
 ======================================================================
@@ -204,7 +228,8 @@ flowchart LR
   Max sessions            : 1024
   Session idle timeout(s) : 1800
   set_system_message      : unsupported (llm_service-only)
-  Multimodal support      : 由后端决定（LTB 会原样转发图片附件）
+  Attachments             : enabled (text always, image when --vision)
+  Vision                  : disabled
   Log level               : INFO
 ----------------------------------------------------------------------
   Tools enabled           : True
@@ -224,6 +249,11 @@ flowchart LR
 [INFO] LLM Tool Bridge service 'LLM_Service' running on ipc:llm_service
 [INFO] Press Ctrl+C to stop...
 ```
+
+> **注意**：
+> - `Attachments` 行表示"服务端**接受**附件字段"。
+> - `Vision` 行表示"服务端**自身是否启用视觉转发**"——默认 `disabled`；传 `--vision` 后变为 `enabled`，此时图片附件会被**转发到后端**（而非被拒绝）。
+> - `Vision` **不**代表"LTB 能理解图片"——真正的视觉处理发生在**后端**。
 
 ---
 
@@ -339,7 +369,7 @@ flowchart LR
 ```powershell
 .\llm_proxy_tool.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 ```
 
 **Linux（Shell）**：
@@ -347,10 +377,10 @@ flowchart LR
 ```bash
 ./llm_proxy_tool \
   --backend-url http://127.0.0.1:1234/v1 \
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 ```
 
-> **注意**：模型 ID 必须支持 **Function Calling / Tool Calls**，否则 LTB 无法触发工具执行。推荐使用 Nemotron、DeepSeek-V3、Qwen2.5 等原生支持 `tools` 的模型。
+> **注意**：模型 ID 必须支持 **Function Calling / Tool Calls**，否则 LTB 无法触发工具执行。推荐使用 Nemotron Omni、DeepSeek-V3、Qwen2.5 等原生支持 `tools` 的模型。
 
 #### `--backend-key KEY`
 
@@ -477,7 +507,7 @@ chmod 600 api_key.txt
 
 ### 4.3 会话管理参数
 
-> **本节参数与 `llm_proxy.exe` 共享大部分**。LTB 额外增加 `--max-history-chars`（见 4.4）。
+> **本节参数与 `llm_proxy.exe` 共享大部分**。LTB 额外增加 `--max-history-chars`（见下文）。
 
 #### `--max-sessions N`
 
@@ -762,32 +792,46 @@ chmod 600 api_key.txt
 ./llm_proxy_tool --max-total-tool-result-chars 500000
 ```
 
-### 4.5 多模态支持说明
+### 4.5 多模态支持说明（**核心**）
 
-LTB 本身**不解析图片内容**，但它会**原样转发**客户端请求中的多模态内容（图片附件）到后端。因此：
+LTB 本身**不解析图片内容**——它是一个**纯转发者**。多模态能否工作，由**后端**决定。
 
 | 环节 | 行为 |
 |------|------|
 | **客户端** | 通过 `generate` 请求携带 `attachments` 数组 |
 | **LTB** | 原样转发 `attachments` 到后端（不做解析） |
 | **后端** | 必须是**支持多模态的 VLM**（如 LM Studio 加载 Qwen2-VL） |
-| **工具循环** | 多模态内容只影响**首轮**；后续工具调用轮次沿用历史 |
+| **工具循环** | 多模态内容只影响**首轮**；后续工具调用轮次沿用历史（图片为占位符） |
 
-**示例**：
+#### 关键：`--vision` 参数的作用
+
+LTB 通过 `--vision` 参数控制**是否允许转发图片附件**：
+
+| `--vision` | 图片附件行为 |
+|:----------:|-------------|
+| **未启用**（默认） | 携带图片附件的请求**被拒绝**（返回 `code: -1`） |
+| **已启用** | 图片附件**原样转发**到后端（由后端决定是否理解） |
+
+> ⚠️ **常见误解**：`--vision` **不**代表"LTB 能理解图片"——它只代表"**允许转发图片**"。真正的视觉处理发生在**后端**。
+
+#### 正确用法
 
 ```powershell
-# 后端加载多模态模型
+# ⚠️ 必须显式传 --vision
 .\llm_proxy_tool.exe `
   --backend-url http://127.0.0.1:1234/v1 `
   --backend-model "qwen2-vl-7b-instruct" `
-  --mcp-reg-agent-app llm_proxy_agent
+  --mcp-reg-agent-app llm_proxy_agent `
+  --vision
 ```
 
 **关键点**：
 
-- **后端决定是否支持多模态**——LTB 只是转发者
-- **工具链循环中，图片只发送一次**——后续轮次使用历史中的占位符
-- **客户端不需要感知多模态**——协议保持一致
+- **必须显式传 `--vision`**，否则图片附件会被拒绝。
+- **`--backend-model` 必须指向 VLM**——若为空，LTB 从 `/v1/models` 拉第一个，**可能不是 VLM**。
+- **后端决定是否支持多模态**——LTB 只是转发者。
+- **工具链循环中，图片只发送一次**——后续轮次使用历史中的占位符（如 `[image: chart.png]`），避免 token 爆炸。
+- **客户端不需要感知多模态**——协议保持一致。
 
 > **与 `llm_service` 的差异**：`llm_service` **不支持多模态**（本地推理路径未实现）；LTB 通过**转发**绕过此限制——只要后端支持，LTB 就能传递。
 
@@ -848,6 +892,7 @@ LTB 本身**不解析图片内容**，但它会**原样转发**客户端请求�
 | `LLM_PROXY_MAX_HISTORY_CHARS` | `--max-history-chars` | `200000` |
 | `LLM_PROXY_MAX_SESSIONS` | `--max-sessions` | `1024` |
 | `LLM_PROXY_SESSION_TIMEOUT` | `--session-timeout` | `1800` |
+| **`LLM_PROXY_VISION`** | **`--vision` / `--no-vision`** | **`1` / `0`** |
 | `LLM_PROXY_LOG_LEVEL` | `--log-level` | `INFO` |
 
 ### 5.2 LTB 独有环境变量
@@ -871,7 +916,7 @@ LTB 本身**不解析图片内容**，但它会**原样转发**客户端请求�
 
 ```powershell
 $env:LLM_PROXY_BACKEND_URL = "http://127.0.0.1:1234/v1"
-$env:LLM_PROXY_BACKEND_MODEL = "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+$env:LLM_PROXY_BACKEND_MODEL = "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 $env:LLM_PROXY_MCP_REG_AGENT_APP = "llm_proxy_agent"
 $env:LLM_PROXY_MAX_TOOL_ROUNDS = "200"
 .\llm_proxy_tool.exe
@@ -881,7 +926,7 @@ $env:LLM_PROXY_MAX_TOOL_ROUNDS = "200"
 
 ```bash
 export LLM_PROXY_BACKEND_URL="http://127.0.0.1:1234/v1"
-export LLM_PROXY_BACKEND_MODEL="nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m"
+export LLM_PROXY_BACKEND_MODEL="nvidia-nemotron-3-nano-omni-30b-a3b-reasoning"
 export LLM_PROXY_MCP_REG_AGENT_APP="llm_proxy_agent"
 export LLM_PROXY_MAX_TOOL_ROUNDS="200"
 ./llm_proxy_tool
@@ -908,7 +953,7 @@ export LLM_PROXY_MAX_TOOL_ROUNDS="200"
 ```powershell
 .\llm_proxy_tool.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m" `
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" `
   --mcp-reg-agent-app llm_proxy_agent `
   --mcp-tool-provider-app agent_main_app `
   --log-level INFO
@@ -919,7 +964,7 @@ export LLM_PROXY_MAX_TOOL_ROUNDS="200"
 ```bash
 ./llm_proxy_tool \
   --backend-url http://127.0.0.1:1234/v1 \
-  --backend-model "nvidia-nemotron-3.5-lightning-30b-a3b@q4_k_m" \
+  --backend-model "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning" \
   --mcp-reg-agent-app llm_proxy_agent \
   --mcp-tool-provider-app agent_main_app \
   --log-level INFO
@@ -929,7 +974,7 @@ export LLM_PROXY_MAX_TOOL_ROUNDS="200"
 
 **预期日志**：
 
-```
+```text
 [INFO] MCP middleware ready: 8 tool(s) cached
 [DEBUG] Task xxx round 0/100: msgs=2 tools=yes
 [DEBUG] Task xxx round 0: executing 1 of 1 tool call(s)
@@ -1060,23 +1105,37 @@ export LLM_PROXY_MAX_TOOL_ROUNDS="200"
 
 **前置准备**：
 
-1. LM Studio 加载 **Qwen2-VL / Llava 等多模态模型**
+1. LM Studio 加载 **Qwen2-VL / Nemotron Omni + mmproj 等多模态模型**
 2. 信标和工具提供者已启动（**注意**：VLM 后端本身可能不支持 tool_calls，此时 LTB 会退化为纯转发）
 
 **启动 LTB（Windows / PowerShell）**：
 
 ```powershell
+# ⚠️ 必须显式传 --vision
 .\llm_proxy_tool.exe `
   --backend-url http://127.0.0.1:1234/v1 `
   --backend-model "qwen2-vl-7b-instruct" `
-  --mcp-reg-agent-app llm_proxy_agent
+  --mcp-reg-agent-app llm_proxy_agent `
+  --vision
+```
+
+**启动 LTB（Linux / Shell）**：
+
+```bash
+# ⚠️ 必须显式传 --vision
+./llm_proxy_tool \
+  --backend-url http://127.0.0.1:1234/v1 \
+  --backend-model "qwen2-vl-7b-instruct" \
+  --mcp-reg-agent-app llm_proxy_agent \
+  --vision
 ```
 
 **要点**：
 
-- **后端必须是 VLM**——LTB 只是转发者，不解析图片
-- **工具循环**：图片只影响首轮；后续工具调用轮次沿用历史占位符
-- **客户端**：通过 `generate` 的 `attachments` 数组携带图片
+- **必须传 `--vision`**——否则图片附件会被拒绝。
+- **后端必须是 VLM**——LTB 只是转发者，不解析图片。
+- **工具循环**：图片只影响首轮；后续工具调用轮次沿用历史占位符。
+- **客户端**：通过 `generate` 的 `attachments` 数组携带图片。
 
 **客户端示例（Pascal）**：
 
@@ -1204,13 +1263,13 @@ end;
    - 检查工具提供者 `pascal_agent_api.exe` 是否已启动并注册到信标。
    - 检查 `--mcp-endpoint` 是否为 `ipc:agent`（信标的实际端点）。
 2. **是否误传了 `--no-tools`？** 启动命令中若含 `--no-tools`，LTB 会退化为纯文本代理。
-3. **后端模型是否支持 Function Calling？** 部分模型（如纯文本补全模型）不支持 `tools` 参数，需换用支持 Function Calling 的模型（如 Nemotron、DeepSeek-V3、Qwen2.5）。
+3. **后端模型是否支持 Function Calling？** 部分模型（如纯文本补全模型）不支持 `tools` 参数，需换用支持 Function Calling 的模型（如 Nemotron Omni、DeepSeek-V3、Qwen2.5）。
 
 ### Q2：LTB 启动时报 `LF_PrepareDone returned 0`
 
 **症状**：
 
-```
+```text
 [LanguageMiddleware] Connection failed: LF_PrepareDone failed
 [WARNING] MCP middleware pre-connect did not yield any tools
 ```
@@ -1344,10 +1403,24 @@ end;
 
 **排查顺序**：
 
-1. **后端是否加载了 VLM？** 纯文本模型不认图片。检查 LM Studio 的模型是否为 Qwen2-VL / Llava 等。
-2. **`--backend-model` 是否指向 VLM？** 若为空，LTB 从 `/v1/models` 拉第一个——可能不是 VLM。
-3. **客户端是否正确组装 `attachments`？** 检查 `kind` 字段是 `"image"`、`data_b64` 非空。
-4. **是否在工具调用轮次后发送图片？** LTB 只在首轮传递图片；后续轮次使用历史占位符。
+1. **`--vision` 是否传了？** 若未传，图片附件会被 LTB 直接拒绝（返回 `code: -1`），根本不会到达后端。
+2. **后端是否加载了 VLM？** 纯文本模型不认图片。检查 LM Studio 的模型是否为 Qwen2-VL / Llava 等。
+3. **`--backend-model` 是否指向 VLM？** 若为空，LTB 从 `/v1/models` 拉第一个——可能不是 VLM。
+4. **客户端是否正确组装 `attachments`？** 检查 `kind` 字段是 `"image"`、`data_b64` 非空。
+5. **是否在工具调用轮次后发送图片？** LTB 只在首轮传递图片；后续轮次使用历史占位符。
+
+### Q12：`--vision` 传了但图片还是"看不到"
+
+**排查**：
+
+1. **确认后端确实是 VLM**——用 LM Studio GUI 直接发图片测试。
+2. **确认 `--backend-model` 就是 VLM 的模型 ID**——与 LM Studio 中的显示名称**完全一致**。
+3. **检查 LM Studio 的 `/v1/models`**：
+   ```bash
+   curl http://127.0.0.1:1234/v1/models
+   ```
+   返回的 ID 就是应该传给 `--backend-model` 的值。
+4. **查看 LTB 的 DEBUG 日志**——确认转发的 payload 中包含 `image_url` 部分。
 
 ---
 
@@ -1418,23 +1491,50 @@ LTB 与 `llm_proxy.exe` 一致，**明确拒绝** `set_system_message`：
 
 **原因**：LTB 是无状态转发器，"全局默认 system message"这个概念在其语义下不存在。
 
-### 8.6 多模态转发（不做解析）
+### 8.6 多模态转发（不做解析，需 `--vision`）
 
 LTB 对多模态内容的处理：
 
 ```mermaid
 flowchart LR
-    A["客户端<br/>attachments 数组"] -->|"generate"| B["LTB<br/>原样转发"]
-    B -->|"HTTP SSE<br/>attachments 原样"| C["后端<br/>VLM"]
-    C -->|"识别图片"| D["返回文本"]
+    A["客户端<br/>attachments 数组"] -->|"generate"| B["LTB<br/>检查 --vision"]
+    B -->|"--vision 关闭"| X["❌ 返回 code: -1"]
+    B -->|"--vision 开启"| C["原样转发<br/>HTTP SSE"]
+    C --> D["后端<br/>VLM"]
+    D -->|"识别图片"| E["返回文本"]
 
     style A fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style B fill:#922B21,stroke:#5A1A14,stroke-width:4px,color:#FFFFFF
-    style C fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
-    style D fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style X fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style C fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
+    style D fill:#1E8449,stroke:#0E4D2A,stroke-width:3px,color:#FFFFFF
+    style E fill:#B7791F,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
 ```
 
-**关键**：LTB **不解析图片内容**，只是把 `attachments` 原样传递给后端。是否支持多模态，**取决于后端**。
+**关键**：
+
+- LTB **不解析图片内容**，只是把 `attachments` 原样传递给后端。
+- **必须显式传 `--vision`**——否则图片附件会被拒绝。
+- 是否支持多模态，**取决于后端**。
+
+### 8.7 多模态在工具链中的历史占位符
+
+LTB 在**首轮**发送完整多模态内容；**后续工具调用轮次**使用**历史占位符**：
+
+```python
+# 首轮：完整的多模态内容（含 image_url）
+backend_content_r0 = build_user_content(
+    text=user_text,
+    attachments=attachments,
+    vision_enabled=CONFIG.vision,
+)
+
+# 历史：图片替换为短占位符
+history_text = _build_history_text(user_text, attachments)
+# 例：'[image: chart.png]' 而不是完整的 base64
+```
+
+**这避免了**多轮工具调用中图片被重复发送导致的 token 爆炸。
 
 ---
 
@@ -1482,12 +1582,17 @@ LingoFuse 服务
   --max-tool-result-chars N 单条工具结果最大字符数 (默认: 8000)
   --max-total-tool-result-chars N 所有工具结果总和上限 (默认: 200000)
 
+多模态
+  --vision                启用图片附件转发 (默认: 禁用)
+  --no-vision             显式禁用 (默认行为)
+
 日志
   --log-level LEVEL       DEBUG / INFO / WARNING / ERROR (默认: INFO)
 
 环境变量与参数一一对应 (前缀 LLM_PROXY_*)
 
-多模态：LTB 原样转发图片附件到后端。是否支持取决于后端。
+⚠️ 多模态：LTB 原样转发图片附件到后端。必须显式传 --vision 才能转发；是否支持取决于后端。
+⚠️ LTB 的 vision 字段固定为 0（服务端自身不做视觉处理）。
 ```
 
 ---
@@ -1496,22 +1601,25 @@ LingoFuse 服务
 
 | 文档 | 说明 |
 |------|------|
-| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心组件 + 两条路径） |
+| [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大核心应用组件 + 两条路径） |
 | [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册（纯文本代理） |
-| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册（本地推理） |
-| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 129+ OpenAI 兼容后端清单（**LTB 同样适用**） |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法（含 LTB 专项 P7 系列） |
+| [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册（本地推理，纯文本） |
+| [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 250+ OpenAI 兼容后端清单（**LTB 同样适用**） |
+| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法（含 LTB 专项 P7 系列、多模态专项 P8 系列） |
 | [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策（历史参考） |
+| [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档 |
 
 ### 根目录相关文档
 
 | 文档 | 说明 |
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
+| [`../Build_Guide.md`](../Build_Guide.md) | 编译指南 |
 | [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
 
 ---
 
-**文档版本**：v3.0（v3 架构重写版——新增多模态转发说明，更新文档索引，移除已删除文档链接）  
-**维护者**：LingoFuse-pasAgent 团队  
+**文档版本**：v3.1（v3 架构重写版 · 多模态参数修正版——补充 `--vision` 参数详解、修正启动横幅与源码字段对齐、`129+` → `250+` 统一、`vision=0` 语义说明）
+
+**维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）
