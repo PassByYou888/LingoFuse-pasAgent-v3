@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-language_middleware.py - v7.3 (LingoFuse Native Multi-Language Middleware)
+language_middleware.py - v7.4 (LingoFuse Native Multi-Language Middleware)
 
 DESCRIPTION
     This module provides a language-agnostic middleware for LingoFuse,
@@ -19,6 +19,35 @@ DESCRIPTION
     The middleware uses direct ctypes calls to the LingoFuse dynamic
     library and is fully thread-safe. It implements a singleton pattern
     to share the same connection across multiple components.
+
+CHANGELOG (v7.4)
+    * FIXED: `_cleanup()` ordering. The previous implementation called
+      LF_Shutdown() BEFORE LF_FreeApp(), which destroys the underlying
+      TLF_App objects and leaves LF_FreeApp operating on a dangling
+      handle. The new order is:
+
+          LF_ExitMainThread() -> LF_FreeApp() -> LF_Shutdown()
+
+      This matches the fix documented in test_lingofuse.py (P0-2) and
+      the implementation of Server.stop(full_cleanup=True) in
+      lingofuse/server.py.
+
+    * FIXED: `_disconnect()` no longer calls LF_Shutdown(). The App
+      handle owned by this middleware (self._app_hnd) must remain valid
+      across a disconnect/reconnect cycle, because _update_config()
+      followed by _connect() reuses the same handle. Calling
+      LF_Shutdown() here would destroy the App and cause the next
+      LF_PrepareClient() call to receive a dangling pointer.
+      LF_Shutdown is now called only from _cleanup(), which runs at
+      interpreter exit after the App has been released.
+
+    * Both cleanup paths now use per-step try/except blocks. A failure
+      in one step no longer prevents the remaining steps from running,
+      and state flags are always reset.
+
+    * Docstrings for _cleanup() and _disconnect() now document the
+      ordering constraint explicitly, so a future edit does not
+      accidentally reintroduce the bug.
 
 CHANGELOG (v7.3)
     * `_read_string` now mirrors Pascal's LF_ReadString behavior: when
@@ -427,7 +456,16 @@ class LanguageMiddleware:
     def _update_config(self, endpoint, timeout_ms, reg_agent_app_name,
                        tool_provider_app, agent_main_api,
                        agent_log_api, register_agent_api):
-        """Update configuration and force reconnect if already started."""
+        """
+        Update configuration and force reconnect if already started.
+
+        {!!!!!  LIFETIME  !!!!!}
+        This method calls `_disconnect()` (which stops the LingoFuse
+        main thread) but deliberately does NOT release the App handle
+        or call LF_Shutdown. The App is owned by the singleton and is
+        released exactly once, in `_cleanup()`, at interpreter exit.
+        This keeps the App valid across reconnects.
+        """
         if endpoint is not None:
             self._endpoint = endpoint
         if timeout_ms is not None:
@@ -481,11 +519,27 @@ class LanguageMiddleware:
                 return False
 
     def _disconnect(self):
-        """Disconnect from the backend and reset state."""
+        """
+        Stop the LingoFuse main thread and reset connection state.
+
+        {!!!!!  DO NOT CALL LF_Shutdown HERE  !!!!!}
+        The App handle held by this middleware (`self._app_hnd`) must
+        remain valid across a disconnect/reconnect cycle. The
+        `_update_config()` path calls `_disconnect()` and may later
+        trigger a fresh `_connect()`, which reuses the same App handle
+        in `LF_PrepareClient`.
+
+        Calling `LF_Shutdown()` here would destroy the underlying
+        TLF_App object, and the subsequent `LF_PrepareClient()` would
+        receive a dangling handle - undefined behaviour.
+
+        The library is unloaded exactly once, in `_cleanup()`, after
+        the App has been released. This mirrors the semantics of
+        `Server.stop(full_cleanup=False)` in lingofuse/server.py.
+        """
         if self._started:
             try:
                 LF_ExitMainThread()
-                LF_Shutdown()
                 sys.stderr.write("[LanguageMiddleware] Disconnected.\n")
             except Exception as e:
                 sys.stderr.write(
@@ -580,22 +634,73 @@ class LanguageMiddleware:
         sys.stderr.flush()
 
     def _cleanup(self):
-        """Clean up LingoFuse resources when the interpreter exits."""
+        """
+        Release all LingoFuse resources held by this middleware.
+
+        {!!!!!  ORDERING IS CRITICAL  !!!!!}
+        The steps must run in this order:
+
+            1. LF_ExitMainThread()
+                   Stop the simulated main thread. Safe to call even
+                   if the main thread was never started.
+
+            2. LF_FreeApp(self._app_hnd)
+                   Release the App handle created in __init__. This
+                   MUST run BEFORE LF_Shutdown, because LF_Shutdown
+                   destroys every object in the global pool and would
+                   leave LF_FreeApp operating on a dangling pointer.
+                   This matches the P0-2 fix in test_lingofuse.py and
+                   Server.stop(full_cleanup=True) in
+                   lingofuse/server.py.
+
+            3. LF_Shutdown()
+                   Unload the library. Safe to call even if the main
+                   thread was never started, and safe to call multiple
+                   times.
+
+        Each step has its own try/except so that a failure in one step
+        does not prevent the remaining steps from running. This is
+        important for step 3: if step 1 raised and skipped step 3, the
+        library would remain loaded and its resources would leak when
+        the process exits.
+
+        Idempotent: `LanguageMiddleware._initialized` is reset to
+        False at the end, and the method is safe to call more than
+        once (for example via atexit plus an explicit shutdown()).
+        """
+        # ---- Step 1: stop the main thread ----
         if self._started:
             try:
                 LF_ExitMainThread()
-                LF_Shutdown()
                 self._started = False
-                sys.stderr.write("[LanguageMiddleware] Resources cleaned up.\n")
-                sys.stderr.flush()
             except Exception as e:
                 sys.stderr.write(
-                    f"[LanguageMiddleware] Exception during cleanup: {e}\n"
+                    f"[LanguageMiddleware] Exception during LF_ExitMainThread: {e}\n"
                 )
                 sys.stderr.flush()
+
+        # ---- Step 2: release the App (BEFORE LF_Shutdown) ----
         if self._app_hnd:
-            LF_FreeApp(self._app_hnd)
+            try:
+                LF_FreeApp(self._app_hnd)
+            except Exception as e:
+                sys.stderr.write(
+                    f"[LanguageMiddleware] Exception during LF_FreeApp: {e}\n"
+                )
+                sys.stderr.flush()
             self._app_hnd = None
+
+        # ---- Step 3: unload the library ----
+        try:
+            LF_Shutdown()
+            sys.stderr.write("[LanguageMiddleware] Resources cleaned up.\n")
+            sys.stderr.flush()
+        except Exception as e:
+            sys.stderr.write(
+                f"[LanguageMiddleware] Exception during LF_Shutdown: {e}\n"
+            )
+            sys.stderr.flush()
+
         LanguageMiddleware._initialized = False
 
     def shutdown(self):
@@ -732,7 +837,13 @@ class LanguageMiddleware:
             return False
 
     def reconnect(self):
-        """Force a reconnection attempt, discarding the current connection."""
+        """
+        Force a reconnection attempt, discarding the current connection.
+
+        This calls `_disconnect()` (which stops the main thread but
+        keeps the App handle valid) and then `_connect()`. The App
+        handle is reused, so no allocation happens here.
+        """
         self._disconnect()
         return self._connect()
 
@@ -786,7 +897,7 @@ def get_default_middleware() -> LanguageMiddleware:
 
 
 if __name__ == "__main__":
-    print("=== LanguageMiddleware Self-test (v7.3, lazy connect) ===")
+    print("=== LanguageMiddleware Self-test (v7.4, lazy connect) ===")
     try:
         mw = LanguageMiddleware.get_instance()
         mw._ensure_connected()
