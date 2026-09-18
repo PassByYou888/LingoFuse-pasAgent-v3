@@ -101,9 +101,31 @@ _FORWARDED_SCALAR_KEYS = (
 )
 
 # Passthrough options forwarded verbatim.
+#
+# Each key in this tuple is copied verbatim from `options` into the
+# backend payload when its value is not None. The proxy does not
+# interpret the value; it is the backend's responsibility to validate
+# and act on it.
+#
+#   - "tools" / "tool_choice":
+#         Standard OpenAI function-calling controls. Used by
+#         llm_proxy_tool (LTB) to drive server-side tool execution.
+#
+#   - "response_format":
+#         Structured Output control. When present, the backend is asked
+#         to constrain its reply to a caller-supplied JSON Schema (or to
+#         the simpler {"type": "json_object"} form). LM Studio, Ollama,
+#         vLLM, and other OpenAI-compatible backends honour this field.
+#         Used by vision clients to obtain detector-style bounding-box
+#         JSON from multimodal models.
+#
+# NOTE: the forwarding loop in stream_chat() is data-driven over this
+# tuple. Adding a key here is the only change required to make the
+# proxy forward it; no branch inside stream_chat() needs to change.
 _FORWARDED_PASSTHROUGH_KEYS = (
     "tools",
     "tool_choice",
+    "response_format",
 )
 
 
@@ -387,6 +409,11 @@ class OpenAIStreamClient:
                 _FORWARDED_SCALAR_KEYS and _FORWARDED_PASSTHROUGH_KEYS
                 are forwarded; everything else is ignored.
 
+                Note: "response_format" is one of the passthrough keys.
+                When present (and not None), it is copied verbatim
+                into the backend payload, enabling Structured Output
+                (JSON Schema / json_object) on backends that support it.
+
             cancel_event:
                 Optional threading.Event. When set, the loop stops
                 yielding and returns cleanly.
@@ -432,9 +459,11 @@ class OpenAIStreamClient:
         host, port, path, is_https = self._split_url(url)
 
         logger.debug(
-            "Backend request: url=%s model=%s msgs=%d tools=%s",
+            "Backend request: url=%s model=%s msgs=%d tools=%s "
+            "response_format=%s",
             url, model, len(messages),
             "yes" if payload.get("tools") else "no",
+            "yes" if payload.get("response_format") else "no",
         )
 
         if is_https:
