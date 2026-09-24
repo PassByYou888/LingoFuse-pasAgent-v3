@@ -124,36 +124,6 @@ flowchart TB
 - **5 层透明模型**：每层 JSON 可看、可改、可回退
 - **确定性**：主链路不依赖 LLM，可复现、可审计
 
-> ⚠️ **MCP-API 代码生成工具已独立到专用仓库，请一律访问：**
->
-> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
->
-> 声明规范、使用手册、生成器源码与预编译包等，**一律以该仓库为准**。
-
-```mermaid
-flowchart LR
-    A["📄 一份 Pascal / C 声明"] --> B["💎 MCP-API 生成器"]
-    B --> C1["🅿️ Pascal"]
-    B --> C2["🐍 Python"]
-    B --> C3["🦀 Rust"]
-    B --> C4["🐹 Go"]
-    B --> C5["☕ Java"]
-    B --> C6["🔷 C#"]
-    B --> C7["📘 TypeScript"]
-    B --> C8["… 几十种目标语言"]
-
-    style A fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
-    style B fill:#9B59B6,stroke:#6C3483,stroke-width:5px,color:#FFFFFF
-    style C1 fill:#F39C12,stroke:#B7791F,stroke-width:4px,color:#FFFFFF
-    style C2 fill:#27AE60,stroke:#145A32,stroke-width:4px,color:#FFFFFF
-    style C3 fill:#C0392B,stroke:#641E16,stroke-width:4px,color:#FFFFFF
-    style C4 fill:#1ABC9C,stroke:#0E6655,stroke-width:4px,color:#FFFFFF
-    style C5 fill:#8E44AD,stroke:#5B2C6F,stroke-width:4px,color:#FFFFFF
-    style C6 fill:#2E86C1,stroke:#1A5276,stroke-width:4px,color:#FFFFFF
-    style C7 fill:#3498DB,stroke:#1F618D,stroke-width:4px,color:#FFFFFF
-    style C8 fill:#5D6D7E,stroke:#2C3E50,stroke-width:4px,color:#FFFFFF
-```
-
 ### 结论
 
 > 如果你需要**将 AI 能力快速、低成本、低侵入地注入到现有 Pascal 生产系统**，并且需要**多模态理解**或**无限语言 MCP-API 生成**能力，**pasAgent v3 是目前最具工程化价值的选择**。
