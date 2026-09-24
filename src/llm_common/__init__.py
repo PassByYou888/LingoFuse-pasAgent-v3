@@ -27,6 +27,11 @@ Package layout (strict dependency direction, top-down only):
       session_base        plain-text session state
       session_multimodal  session state with tool_calls / attachments
 
+Note: the lf_io module is NOT part of this package. It was relocated
+to the lingofuse package, where it lives next to the low-level ctypes
+bindings it depends on. See the "Dependency direction" section below
+for the exact rule.
+
 Module status legend
 --------------------
 Each module in this package is annotated with one of the following
@@ -66,11 +71,41 @@ Concrete status of each module:
         dependency was removed when list_models() was rewritten on
         top of http.client.
 
-Dependency rule
----------------
-  Top-level LLM services may import from llm_common.
-  No module in llm_common may import from a top-level LLM service.
-  This keeps the package reusable and independently testable.
+Dependency direction
+--------------------
+The full dependency graph, from the top-level services down to the
+standard library, is:
+
+  Top-level LLM services (llm_service.py, llm_proxy.py,
+  llm_proxy_tool.py, llm_test.py)
+      |
+      +--> llm_common.* (this package)
+      |        |
+      |        +--> lingofuse.lf_io   (allowed)
+      |        +--> lingofuse._lf_native  (allowed for a few modules)
+      |        +--> Python standard library
+      |
+      +--> lingofuse.* (top-level imports)
+               |
+               +--> lingofuse.lf_io
+               +--> lingofuse._lf_native
+
+Two rules apply:
+
+  1. No module in llm_common may import from a top-level LLM service.
+     This keeps the package reusable and independently testable.
+
+  2. Modules in llm_common MAY import from the lingofuse package.
+     Specifically, the following edges exist and are intentional:
+
+        llm_common.headers   -> lingofuse.lf_io.dumps_json
+        llm_common.sse_client -> (via headers.jdump) lingofuse.lf_io
+
+     The rule "lingofuse.* must not import from llm_common.*" still
+     holds in the opposite direction, so no import cycle can form.
+     The current submodule list of lingofuse depends only on the
+     standard library and on lingofuse._lf_native, so importing it
+     from llm_common introduces no cycle.
 
 When adding a new module
 ------------------------
@@ -85,16 +120,21 @@ Before adding a module to this package, check the following:
      that reaches back into llm_proxy.py or llm_service.py breaks the
      reusability guarantee and must not be added here.
 
-  3. Add it to the correct layer in the import block below, keeping
+  3. Does it need JSON serialization for LingoFuse payloads? If so,
+     it must delegate to lingofuse.lf_io.dumps_json rather than
+     calling json.dumps directly. The unified policy is enforced at
+     the lf_io module and must not be duplicated here.
+
+  4. Add it to the correct layer in the import block below, keeping
      the layer groups visually separated. Python's import system
      resolves the actual order; the grouping is for human readers.
 
-  4. Add its name to __all__.
+  5. Add its name to __all__.
 
-  5. If the module is used by only some of the services, note that
+  6. If the module is used by only some of the services, note that
      in the module docstring and in the status legend above.
 
-  6. Update the layer listing in this docstring so that the next
+  7. Update the layer listing in this docstring so that the next
      reader sees the new module without having to open the import
      block.
 

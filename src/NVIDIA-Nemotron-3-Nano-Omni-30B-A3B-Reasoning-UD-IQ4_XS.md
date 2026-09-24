@@ -3,14 +3,6 @@
 > **文档版本**：V3.2（v3 多模态重写版 · 能力边界修正版）
 > **最后更新**：2026-09-17
 > **适用组件**：`llm_service.exe`（纯文本加载）、`llm_proxy.exe`（多模态转发）、`llm_proxy_tool.exe`（LTB，多模态转发 + 工具）
-> **相关文档**（同目录 / `src/` 子目录）：
-> - 项目总览：[`readme.md`](readme.md)
-> - 编译指南：[`Build_Guide.md`](Build_Guide.md)
-> - 生态总览：[`src/LingoFuse_LLM_Ecosystem_User_Guide.md`](src/LingoFuse_LLM_Ecosystem_User_Guide.md)
-> - 本地推理服务：[`src/LingoFuse_LLM_Service_CLI_guide.md`](src/LingoFuse_LLM_Service_CLI_guide.md)
-> - 纯转发代理：[`src/LingoFuse_LLM_Proxy_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_CLI_Guide.md)
-> - LTB 工具桥：[`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)
-> - 踩坑大全：[`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md)
 
 ---
 
@@ -1145,34 +1137,7 @@ flowchart TB
 
 ---
 
-## 十一、相关文档
-
-### 根目录文档
-
-| 文档 | 说明 |
-|------|------|
-| [`readme.md`](readme.md) | 项目总览与四大核心应用组件 |
-| [`Build_Guide.md`](Build_Guide.md) | 编译指南 |
-| [`Pascal_Integration_Guide.md`](Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
-| [`code_generate_mcp.md`](code_generate_mcp.md) | 代码生成器使用手册 |
-| [`pascal_code_mcp_rule.md`](pascal_code_mcp_rule.md) | Pascal 声明规范 |
-| [`C_code_mcp_rule.md`](C_code_mcp_rule.md) | C 声明规范 |
-
-### `src/` 子目录文档
-
-| 文档 | 说明 |
-|------|------|
-| [`src/LingoFuse_LLM_Ecosystem_User_Guide.md`](src/LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大应用组件 + 两条路径） |
-| [`src/LingoFuse_LLM_Service_CLI_guide.md`](src/LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册（**明确不支持多模态**） |
-| [`src/LingoFuse_LLM_Proxy_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册（多模态转发） |
-| [`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册（多模态转发 + 工具） |
-| [`src/LingoFuse_LLM_Proxy_Compatibility_Guide.md`](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 250+ OpenAI 兼容后端清单 |
-| [`src/LingoFuse_LLM_Pitfalls_For_AI.md`](src/LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全（**含 P8 多模态专项**） |
-| [`src/LingoFuse_LLM_Service_Work_Summary.md`](src/LingoFuse_LLM_Service_Work_Summary.md) | 版本演进与架构决策 |
-
----
-
-## 十二、核心要点速记
+## 核心要点速记
 
 > 📌 **六句话记住本文档**：
 

@@ -14,34 +14,101 @@ Contents
 
 Design notes
 ------------
-* jdump uses ensure_ascii=False so that Chinese, emoji, and other
-  non-ASCII content is emitted as literal UTF-8 bytes, never as
-  \\uXXXX escapes. This is required for cross-language fidelity.
-* jdump also passes default=str so that an unexpected non-serializable
-  object (for example a tool result that contains a custom type) does
-  not raise. See the jdump docstring for the trade-off.
+* jdump delegates to lingofuse.lf_io.dumps_json, the toolchain-wide
+  JSON serialization policy. This guarantees that the HTTP path
+  (sse_client.OpenAIStreamClient) and the LF DataHandle path
+  (lingofuse.lf_io.write_json) share exactly one policy:
+
+      json.dumps(obj, ensure_ascii=False, default=str)
+
+  Consequences of that shared policy:
+
+    - ensure_ascii=False means Chinese, emoji, and other non-ASCII
+      content is emitted as literal UTF-8 bytes, never as \\uXXXX
+      escapes. This is required for cross-language fidelity.
+
+    - default=str means an unexpected non-serializable object (for
+      example a tool result that contains a custom type) degrades to
+      its str() representation instead of raising TypeError. See the
+      jdump docstring for the trade-off.
+
+  Centralizing the policy in lingofuse.lf_io means that a future
+  change to the serialization rules (adding sort_keys, switching to
+  orjson, adding an indent) is made in exactly one place and takes
+  effect on both paths at once.
+
+* The dependency direction is:
+
+      llm_common.headers  ->  lingofuse.lf_io
+
+  This is an ALLOWED direction. The rule "the lingofuse package must
+  not import anything from llm_common" holds in the opposite
+  direction, so no import cycle can form. As of the current revision,
+  lingofuse.lf_io depends only on the standard library
+  (ctypes, json) and on lingofuse._lf_native. Importing it from
+  llm_common therefore introduces no cycle.
+
+  This edge is not an isolated exception. Within the lingofuse
+  package itself, the same module is consumed by:
+    - lingofuse.core        (DataHandle payload I/O, App c_char_p args)
+    - lingofuse.server      (Server c_char_p args)
+    - lingofuse.client      (C4 c_char_p args)
+    - lingofuse.serializers (default_serializer delegates dumps_json)
+    - lingofuse.bridge      (all payload I/O and c_char_p args)
+    - lingofuse.__init__    (module-level convenience c_char_p args)
+
+  The llm_common.headers -> lingofuse.lf_io edge is therefore one of
+  a family of consumer edges, all of which share the same
+  serialization policy. See lingofuse.lf_io's module docstring for
+  the complete list.
+
 * parse_extra_headers raises ValueError on any malformed input so that
   the caller can exit with a clear [FATAL] message at startup rather
   than failing later during a request.
+
 * load_key_from_file raises ValueError on any read or validation
   problem, for the same reason. It also handles UTF-8 BOM (a very
   common artifact of Windows editors) and rejects multi-line files,
   which would otherwise produce a corrupted Authorization header.
 
-This module has no dependencies on any other llm_common module.
+* UTF-8 encoding safety (G1 fix)
+  jdump is the HTTP counterpart of lingofuse.lf_io.dumps_json. The
+  resulting JSON text is now encoded to UTF-8 with errors="replace"
+  so that a lone surrogate (which can only arise from a
+  non-conformant producer that injected a raw "\\udXXX" escape into a
+  JSON string which json.loads then decoded into a Python surrogate)
+  is emitted as U+FFFD instead of raising UnicodeEncodeError.
+
+  Rationale: dumps_json itself is well-behaved (it uses
+  ensure_ascii=False and default=str, neither of which can produce a
+  surrogate on its own). But dumps_json is not responsible for
+  validating its input; if the object graph contains a surrogate,
+  the encoder faithfully emits it as a Python str. The .encode()
+  step is therefore the last place where the surrogate would be
+  caught, and errors="replace" makes that step infallible. See the
+  module docstring of lingofuse.lf_io for the toolchain-wide
+  encoding policy.
+
+This module depends on lingofuse.lf_io only.
 """
 
 import json
 from typing import Any, Dict
+
+from lingofuse.lf_io import dumps_json
 
 
 def jdump(obj: Any) -> bytes:
     """
     Serialize a Python object to UTF-8 JSON bytes.
 
-    Differences from the stdlib default:
+    This is a thin wrapper around lingofuse.lf_io.dumps_json, which is
+    the single source of truth for the toolchain's JSON serialization
+    policy. The properties below are inherited from that policy:
+
       * ensure_ascii=False: non-ASCII characters are preserved as
         literal UTF-8 bytes instead of being escaped as \\uXXXX.
+
       * default=str: any object that the JSON encoder cannot serialize
         is converted with str() rather than raising TypeError. This
         keeps the server alive if a tool result happens to contain a
@@ -72,13 +139,27 @@ def jdump(obj: Any) -> bytes:
     a model. Callers that care about strict type fidelity should
     pre-serialize their payload with a strict encoder instead.
 
+    Encoding safety (G1 fix)
+    ------------------------
+    The final .encode() uses errors="replace". A lone surrogate
+    cannot be encoded to valid UTF-8; without the errors parameter
+    the call would raise UnicodeEncodeError and abort the entire
+    request. With it, the surrogate is emitted as U+FFFD (the
+    Unicode replacement character), the payload stays valid UTF-8,
+    and the caller is never interrupted.
+
+    In practice a well-formed caller never produces a surrogate.
+    The fix exists so that a broken caller (or a data path that
+    happened to transport a raw "\\udXXX" JSON escape from a
+    non-conformant producer) cannot bring the HTTP layer down.
+
     Args:
         obj: Any JSON-serializable Python object.
 
     Returns:
         UTF-8 encoded bytes, ready to be sent over the wire.
     """
-    return json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
+    return dumps_json(obj).encode("utf-8", errors="replace")
 
 
 def parse_extra_headers(raw: str) -> Dict[str, str]:
@@ -92,6 +173,28 @@ def parse_extra_headers(raw: str) -> Dict[str, str]:
 
     Empty or whitespace-only input yields an empty dict (the common
     case when the user does not pass --backend-extra-headers).
+
+    Input source
+    ------------
+    `raw` is a command-line argument or an environment variable, not
+    an inbound network payload. It is parsed with the standard
+    library's json.loads() and any failure is surfaced as a
+    ValueError so that the caller can abort startup with a clear
+    [FATAL] message.
+
+    This is deliberately NOT routed through the unified JSON repair
+    preprocessor:
+
+      * The toolchain-wide repair policy is for inbound external
+        payloads whose source is a non-Pascal producer that might
+        emit malformed JSON. A CLI flag is written by the operator
+        and is expected to be exactly what they typed.
+
+      * The caller (llm_proxy._init_global_config /
+        llm_proxy_tool._init_global_config) already wraps this
+        function in try/except ValueError and exits with a clear
+        message. Repairing the flag silently would hide the typo
+        from the operator.
 
     Args:
         raw: The raw string from the command line or environment.

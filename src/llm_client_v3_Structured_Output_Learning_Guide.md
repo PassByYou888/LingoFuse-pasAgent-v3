@@ -8,12 +8,13 @@
 > - 想理解"为什么我的提示词不生效"的调试者
 > - 需要在 LingoFuse 生态中做目标检测、信息抽取的人
 >
-> **文档版本**：v1.0
-> **最后更新**：2026-09-17
+> **文档版本**：v1.1（目录对齐版）
+> **最后更新**：2026-09-24
 > **相关文档**：
-> - `llm_client_v3.md` §16 —— Pascal 客户端结构化输出实践
-> - `LingoFuse_LLM_Proxy_CLI_Guide.md` §5.5 —— 代理层多模态转发
-> - `NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md` —— 推荐 VLM 模型
+> - [`llm_client_v3.md`](llm_client_v3.md) §16 —— Pascal 客户端结构化输出实践
+> - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) §5.5 —— 代理层多模态转发
+> - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) §4.5 —— LTB 多模态转发
+> - [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) —— 推荐 VLM 模型
 
 ---
 
@@ -60,6 +61,7 @@
 问题来了：**模型输出了合法 JSON，但前面加了废话，后面还加了"希望能帮到你"**。
 
 你要的只是 `["巴黎", "伦敦", "纽约"]`，但你拿到的是：
+
 ```
 好的，这是城市列表：
 ["巴黎", "伦敦", "纽约"]
@@ -107,7 +109,7 @@ def extract_json(text):
         return json.loads(text)
     except:
         pass
-    
+
     # 尝试从代码块中提取
     match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
     if match:
@@ -115,7 +117,7 @@ def extract_json(text):
             return json.loads(match.group(1))
         except:
             pass
-    
+
     # 尝试从第一个 { 到最后一个 }
     start = text.find('{')
     end = text.rfind('}')
@@ -124,10 +126,10 @@ def extract_json(text):
             return json.loads(text[start:end+1])
         except:
             pass
-    
+
     # 尝试修复常见的 JSON 错误
     # ...
-    
+
     raise ValueError("Could not extract JSON")
 ```
 
@@ -158,6 +160,7 @@ def extract_json(text):
 **用纯提示词方式，你可能得到的输出**：
 
 **情况 1：加了说明**（JSON 前后有文字）
+
 ```
 根据图像分析，我检测到以下目标：
 {"detections": [...]}
@@ -165,6 +168,7 @@ def extract_json(text):
 ```
 
 **情况 2：字段名漂移**（模型认为更合理的字段名）
+
 ```json
 {
   "objects": [
@@ -174,6 +178,7 @@ def extract_json(text):
 ```
 
 **情况 3：坐标格式不符**（模型用了像素坐标）
+
 ```json
 {
   "detections": [
@@ -183,6 +188,7 @@ def extract_json(text):
 ```
 
 **情况 4：方框顺序错误**（模型用了 `[y1, x1, y2, x2]`）
+
 ```json
 {
   "detections": [
@@ -192,6 +198,7 @@ def extract_json(text):
 ```
 
 **情况 5：置信度用百分数**
+
 ```json
 {
   "detections": [
@@ -201,6 +208,7 @@ def extract_json(text):
 ```
 
 **情况 6：模型拒绝输出 JSON，用自然语言描述**
+
 ```
 图中左侧有一个站立的人，大约占据画面左半部分；
 右侧有一只小狗，位于画面中下部。
@@ -245,11 +253,13 @@ def extract_json(text):
 Structured Output 的核心是**约束解码（Constrained Decoding）**。
 
 **普通解码流程**：
+
 ```
 当前上下文 → 模型 → 概率分布（词汇表上所有 token 的概率）→ 采样 → 下一个 token
 ```
 
 例如，模型要生成下一个 token 时，概率分布可能是：
+
 ```
 "{" : 0.35
 "Hello" : 0.15
@@ -259,6 +269,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 ```
 
 **约束解码流程**：
+
 ```
 当前上下文 + 当前 schema 状态 → 模型 → 概率分布
                                             ↓
@@ -272,6 +283,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 ```
 
 例如，如果 schema 要求下一个 token 必须是 `{`（因为必须从对象开始），那么：
+
 ```
 "{" : 0.35   → 保留
 "Hello" : 0.15   → 掩码为 0
@@ -320,12 +332,14 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 理解 Structured Output 时，要注意三个不同的层次：
 
 **层次 1：无约束**
+
 ```
 模型：自由输出任何文本
 风险：完全不可控
 ```
 
 **层次 2：JSON Mode（`{"type": "json_object"}`）**
+
 ```
 模型：保证输出合法 JSON
 风险：
@@ -336,6 +350,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 ```
 
 **层次 3：Structured Outputs（`{"type": "json_schema", ...}`）**
+
 ```
 模型：保证输出符合指定 JSON Schema
 保证：
@@ -498,6 +513,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 ```
 
 **正确**：
+
 ```json
 {
   "type": "json_schema",
@@ -520,6 +536,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 ```
 
 **正确**：
+
 ```json
 {
   "json_schema": {
@@ -541,6 +558,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 ```
 
 **正确**：
+
 ```json
 {
   "type": "object",
@@ -567,6 +585,7 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 **错误 5：`additionalProperties` 未设**
 
 严格模式下，**所有对象必须**显式设置：
+
 ```json
 {
   "type": "object",
@@ -616,11 +635,13 @@ Structured Output 的核心是**约束解码（Constrained Decoding）**。
 - `required`：哪些字段是必需的。
 
 **对应的合法 JSON**：
+
 ```json
 { "name": "Alice", "age": 30 }
 ```
 
 **对应的非法 JSON**：
+
 ```json
 { "name": "Alice" }                    // ❌ 缺 age
 { "name": 123, "age": 30 }             // ❌ name 不是字符串
@@ -1049,6 +1070,7 @@ curl http://127.0.0.1:1234/v1/models
 ```
 
 **提示词配合**：
+
 ```
 检测图片中的所有目标。返回归一化坐标（0~1），
 格式为 [x_min, y_min, x_max, y_max]，
@@ -1056,6 +1078,7 @@ curl http://127.0.0.1:1234/v1/models
 ```
 
 **预期输出**：
+
 ```json
 {
   "detections": [
@@ -1465,6 +1488,7 @@ end;
 ```
 
 **观察关键日志**：
+
 ```
 [DEBUG] Backend request: url=... model=... msgs=N tools=no response_format=yes
 ```
@@ -1525,6 +1549,7 @@ else if LLM.ServerKind = 'proxy' then
 **原则 1：尽可能扁平**
 
 ❌ 避免：
+
 ```json
 {
   "type": "object",
@@ -1545,6 +1570,7 @@ else if LLM.ServerKind = 'proxy' then
 ```
 
 ✅ 推荐：
+
 ```json
 {
   "type": "object",
@@ -1562,11 +1588,13 @@ else if LLM.ServerKind = 'proxy' then
 **原则 2：每个字段都给 `description`**
 
 ❌ 差：
+
 ```json
 {"label": {"type": "string"}}
 ```
 
 ✅ 好：
+
 ```json
 {
   "label": {
@@ -1583,6 +1611,7 @@ else if LLM.ServerKind = 'proxy' then
 **原则 4：`additionalProperties: false` 是必须的**
 
 严格模式下，**每个 object** 都要：
+
 ```json
 {
   "type": "object",
@@ -1627,11 +1656,13 @@ else if LLM.ServerKind = 'proxy' then
 即使有 schema，提示词也应该说明任务。
 
 ❌ 差：
+
 ```
 用户：检测图片。
 ```
 
 ✅ 好：
+
 ```
 用户：检测图片中的所有目标。返回归一化坐标（0~1），
       格式为 [x_min, y_min, x_max, y_max]。
@@ -1652,12 +1683,14 @@ bbox 格式说明：
 **原则 3：不要和 schema 冲突**
 
 ❌ 冲突：
+
 ```
 Schema 要求 { "detections": [...] }
 提示词却说：请直接返回方框列表 [...]   ← 冲突
 ```
 
 ✅ 一致：
+
 ```
 Schema 要求 { "detections": [...] }
 提示词也说：请返回包含 detections 数组的 JSON
@@ -1966,13 +1999,22 @@ Structured Output **不影响流式输出**。token 一个一个来，客户端�
 
 **本项目文档**：
 
-- `llm_client_v3.md` §16 —— Pascal 客户端完整指南
-- `LingoFuse_LLM_Proxy_CLI_Guide.md` §5.5 —— 代理层多模态转发
-- `LingoFuse_LLM_Pitfalls_For_AI.md` —— 踩坑大全
+- [`llm_client_v3.md`](llm_client_v3.md) §16 —— Pascal 客户端完整指南
+- [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) §5.5 —— 代理层多模态转发
+- [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) §4.5 —— LTB 多模态转发
+- [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) —— Pascal 核心层完整指南（含踩坑知识库）
+
+### 代码生成器
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 一份声明 → **几十种目标语言的 API 接口**。声明规范、使用手册、生成器源码与预编译包均以该仓库为准。
 
 ---
 
-**文档版本**：v1.0
+**文档版本**：v1.1（目录对齐版——移除对已删除文档 `LingoFuse_LLM_Pitfalls_For_AI.md` 的引用；§7 引用改为指向实际存在的文档；新增 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 引用；MCP-API 生成器统一指向 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)；对齐实际仓库文档清单）
 
 **维护建议**：如果发现新的 schema 关键字支持、新的后端、新的应用场景，追加到对应章节。
 

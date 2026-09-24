@@ -20,6 +20,7 @@ Additionally, module-level convenience functions:
 - check_main_thread(), check_app(), check_api(): health checks.
 - set_network_event() / clear_network_event(): install or remove
   process-global network event callbacks.
+- repair_json_text(): the toolchain-wide JSON repair preprocessor.
 
 All functions are thread-safe. For detailed usage, see the docstrings
 in the respective modules and the Pascal import unit
@@ -40,6 +41,48 @@ in the respective modules and the Pascal import unit
 - Install callbacks BEFORE `LF_PrepareDone` and clear them BEFORE
   `LF_Shutdown` to avoid races and to release the Python-side strong
   references held by the module.
+
+{!!!!!  JSON REPAIR PREPROCESSING  !!!!!}
+Every JSON read path in the toolchain (lf_io.read_json,
+lf_io.read_json_or_bytes, serializers.default_deserializer,
+bridge.normalize_json_bytes) routes its decoded text through
+lingofuse.json_repair_preprocess.repair_json_text before it hands the
+text to json.loads. The policy is a strict three-way decision:
+
+    * Valid JSON       -> returned unchanged, NO log message.
+    * Repairable JSON  -> repaired, one WARNING naming the source.
+    * Unrepairable     -> returned unchanged, one ERROR naming the
+                          source (on strict read paths only; the
+                          lenient read paths suppress the error
+                          because a non-JSON payload is a legitimate
+                          outcome there).
+
+The same entry point is re-exported here as `repair_json_text`, so
+that advanced callers -- for example, top-level LLM services that
+need to apply the exact same repair semantics to their own JSON text
+-- can reuse the policy without duplicating the three-way logic.
+
+The repair engine can be disabled globally by setting the
+environment variable LINGOFUSE_JSON_REPAIR=0. When disabled, the
+preprocessor only validates and never rewrites; the historical
+behaviour of every read path is preserved, including the strict
+readers raising on malformed input.
+
+The repair engine itself lives in lingofuse.json_repair. Importing
+lingofuse does NOT eagerly import it: the engine is loaded lazily
+the first time repair_json_text encounters a malformed payload. A
+deployment that strips lingofuse.json_repair will still start
+cleanly, and will degrade to validation-only behaviour with a
+single load-time WARNING.
+
+{!!!!!  STRING PARAMETERS  !!!!!}
+Every string argument passed to an LF_* function from this module is
+routed through `lingofuse.lf_io.cstr`, which supplies NUL-terminated
+UTF-8 bytes for the c_char_p parameter. This removes the previous
+reliance on the hidden NUL byte inside CPython bytes objects and
+makes the wire contract explicit.
+
+All comments, docstrings, and log messages are in English.
 """
 
 from .core import DataHandle, App, generate_app_name, get_app_name
@@ -61,6 +104,29 @@ from .network_events import (
     get_network_event_queue,
 )
 from ._lf_native import LF_SetOption as _LF_SetOption
+
+# Unified LingoFuse payload I/O.
+#
+# cstr() is the single source of truth for NUL-terminated UTF-8 bytes
+# for every LF_* c_char_p parameter in this package. Importing it here
+# lets the convenience functions below stop hand-rolling
+# `value.encode("utf-8") + b"\x00"`.
+from .lf_io import cstr
+
+# Unified JSON repair preprocessing.
+#
+# repair_json_text() is the single entry point for the toolchain-wide
+# JSON repair policy. It is used internally by lf_io, serializers, and
+# bridge, and is re-exported here so that advanced callers (for
+# example, the top-level LLM services) can apply the exact same
+# policy to their own JSON text without duplicating the three-way
+# (valid / repairable / unrepairable) decision.
+#
+# This import does NOT trigger the loading of lingofuse.json_repair:
+# the repair engine is loaded lazily, on the first malformed payload
+# that repair_json_text sees. Importing lingofuse therefore keeps its
+# historical startup cost.
+from .json_repair_preprocess import repair_json_text
 
 
 # ======================================================================
@@ -122,6 +188,16 @@ from ._lf_native import LF_SetOption as _LF_SetOption
 #     if the candidate with the oldest timestamp is older than this
 #     value, the system falls back to the newest client to avoid
 #     starvation (integer).
+#
+# === JSON Repair Preprocessing ===
+# - Not an LF_SetOption key. Controlled by the environment variable
+#   LINGOFUSE_JSON_REPAIR (see lingofuse.json_repair_preprocess):
+#     - unset / "1"    : repair is enabled (default).
+#     - "0" / "false"  : repair is disabled; only validation runs,
+#                        and malformed payloads are never rewritten.
+#   This option is listed here so that operators reading this module
+#   as the entry point of the package can find the full set of
+#   runtime controls in one place.
 # ======================================================================
 
 def set_option(option: str, value: str) -> None:
@@ -131,11 +207,12 @@ def set_option(option: str, value: str) -> None:
     All changes take effect immediately. Unknown options are silently
     ignored. For a full list of keys, see the module docstring above
     or the Pascal import unit.
+
+    Both string arguments are passed through lingofuse.lf_io.cstr,
+    which supplies the NUL-terminated UTF-8 bytes expected by the
+    underlying c_char_p parameters.
     """
-    _LF_SetOption(
-        option.encode("utf-8") + b'\x00',
-        value.encode("utf-8") + b'\x00',
-    )
+    _LF_SetOption(cstr(option), cstr(value))
 
 
 # ======================================================================
@@ -183,9 +260,13 @@ def post_status(status: str) -> None:
     {!!!!!  IMPORTANT  !!!!!}
     This function also relies on the main thread to process the queue.
     Before `LF.PrepareDone`, messages may not appear in the buffer.
+
+    The status string is passed through lingofuse.lf_io.cstr, which
+    supplies the NUL-terminated UTF-8 bytes expected by the underlying
+    c_char_p parameter.
     """
     from ._lf_native import LF_PostStatus
-    LF_PostStatus(status.encode("utf-8") + b'\x00')
+    LF_PostStatus(cstr(status))
 
 
 def check_main_thread() -> bool:
@@ -199,9 +280,13 @@ def check_app(app_name: str) -> bool:
     Check whether an application with the given name is available
     (locally or remotely). This is a quick lookup, but may not reflect
     recent changes. Useful for probing availability before a call.
+
+    The app name is passed through lingofuse.lf_io.cstr, which
+    supplies the NUL-terminated UTF-8 bytes expected by the underlying
+    c_char_p parameter.
     """
     from ._lf_native import LF_CheckApp
-    return LF_CheckApp(app_name.encode("utf-8") + b'\x00') != 0
+    return LF_CheckApp(cstr(app_name)) != 0
 
 
 def check_api(app_name: str, api_name: str) -> bool:
@@ -216,6 +301,10 @@ def check_api(app_name: str, api_name: str) -> bool:
     does not guarantee that the API will still be available at the
     moment of the actual call.
 
+    Both string arguments are passed through lingofuse.lf_io.cstr,
+    which supplies the NUL-terminated UTF-8 bytes expected by the
+    underlying c_char_p parameters.
+
     Args:
         app_name: Application name (UTF-8, case-insensitive).
         api_name: API name (UTF-8, case-insensitive).
@@ -225,10 +314,7 @@ def check_api(app_name: str, api_name: str) -> bool:
         application, False otherwise.
     """
     from ._lf_native import LF_CheckApi
-    return LF_CheckApi(
-        app_name.encode("utf-8") + b'\x00',
-        api_name.encode("utf-8") + b'\x00',
-    ) != 0
+    return LF_CheckApi(cstr(app_name), cstr(api_name)) != 0
 
 
 # ======================================================================
@@ -257,4 +343,6 @@ __all__ = [
     "NetworkEventListener",
     "NetworkEventQueue",
     "get_network_event_queue",
+    # JSON repair preprocessing
+    "repair_json_text",
 ]

@@ -22,7 +22,8 @@ TCP_NODELAY, this gives true real-time streaming.
 
 This module has NO third-party dependencies. It imports only from the
 Python standard library (http.client, json, logging, socket, ssl,
-urllib.parse). The earlier implementation used `requests` for the
+urllib.parse) plus the unified JSON repair preprocessor from the
+lingofuse package. The earlier implementation used `requests` for the
 list_models() probe; that dependency was removed so that the two
 proxy siblings can be packaged and distributed without pulling in
 urllib3 / certifi / idna / charset_normalizer.
@@ -52,7 +53,37 @@ and `list_models` creates its own HTTP connection, so there is no
 shared connection state. The configuration fields are read-only after
 __init__.
 
-This module depends on llm_common.headers for jdump.
+{!!!!!  INBOUND PARSING - UNIFIED JSON REPAIR IS APPLIED  !!!!!}
+This module contains two direct `json.loads` call sites:
+
+    1. In `_read_sse_stream`, to parse an SSE frame body received
+       from the backend.
+    2. In `list_models`, to parse the backend's /v1/models response.
+
+Neither of these is an LF DataHandle payload, but BOTH are external
+input and BOTH can carry malformed JSON (some proxies and some
+non-conformant backends emit trailing commas, stray control bytes,
+or truncated frames). The unified repair preprocessor
+`lingofuse.json_repair_preprocess.repair_json_text` is therefore
+applied BEFORE giving up:
+
+    * Fast path: try json.loads() first.
+    * On failure, call repair_json_text(..., report_failure=False)
+      and retry json.loads() on the repaired text.
+    * If the repair still does not yield valid JSON, the frame / the
+      response is treated as unusable and skipped WITHOUT raising.
+
+This guarantees a single behavioural contract: a malformed inbound
+JSON document can never abort the streaming loop or the model
+listing.
+
+The OUTBOUND direction of this module is already unified: the request
+body is produced via llm_common.headers.jdump, which delegates to
+lingofuse.lf_io.dumps_json. That single delegation is what guarantees
+that no \\uXXXX escape ever reaches the backend, on the request side.
+
+This module depends on llm_common.headers for jdump, and on
+lingofuse.json_repair_preprocess for repair_json_text.
 """
 
 import http.client
@@ -62,6 +93,8 @@ import socket
 import ssl
 from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urlparse
+
+from lingofuse.json_repair_preprocess import repair_json_text
 
 from .headers import jdump
 
@@ -274,6 +307,14 @@ class OpenAIStreamClient:
         raises: on any failure it logs a warning and returns an empty
         list.
 
+        JSON handling:
+          The backend's HTTP response body is external input, so the
+          fast-path json.loads() is wrapped: on failure the text is
+          routed through the unified repair preprocessor and parsed
+          again. If the repair still fails, an empty list is returned
+          (never an exception). This matches the toolchain-wide rule
+          that malformed inbound JSON must not abort the caller.
+
         Returns:
             A list of model IDs. Empty list on any failure.
         """
@@ -330,11 +371,16 @@ class OpenAIStreamClient:
                 )
                 return []
 
-            try:
-                data = json.loads(raw.decode("utf-8", errors="replace"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # INBOUND parsing with unified repair fallback.
+            text = raw.decode("utf-8", errors="replace")
+            data = self._parse_inbound_json(
+                text,
+                source="sse_client.list_models",
+            )
+            if data is None:
                 logger.warning(
-                    "Backend /v1/models returned invalid JSON: %s", e,
+                    "Backend /v1/models returned invalid JSON; "
+                    "model auto-discovery skipped",
                 )
                 return []
 
@@ -379,6 +425,60 @@ class OpenAIStreamClient:
                     conn.close()
                 except Exception:
                     pass
+
+    # ------------------------------------------------------------------
+    # Inbound JSON parsing helper (shared by list_models + SSE frames)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_inbound_json(
+        text: str,
+        source: str,
+    ) -> Optional[Any]:
+        """
+        Parse an inbound JSON text with a unified-repair fallback.
+
+        Strategy (fast path first, then repair):
+          1. Try json.loads(text).
+          2. On JSONDecodeError, call
+             repair_json_text(text, source=..., report_failure=False).
+          3. If the repaired text differs from the original, retry
+             json.loads() on it.
+          4. If the repaired text is identical (no repair available)
+             or the retry also fails, return None.
+
+        The function never raises. A None return means "the payload
+        could not be interpreted as JSON, and the caller should treat
+        it as unusable" (skip a frame, or return an empty list).
+        """
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            repaired = repair_json_text(
+                text,
+                source=source,
+                report_failure=False,
+            )
+        except Exception:
+            # The preprocessor itself is defensive, but we add one
+            # more guard here so that a broken repair engine can
+            # never propagate into the streaming loop.
+            return None
+
+        if repaired == text:
+            # Repair engine either disabled or unable to help; the
+            # payload is genuinely uninterpretable.
+            return None
+
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            # The engine validated its own output, so this branch
+            # should be unreachable. Guard anyway.
+            return None
 
     # ------------------------------------------------------------------
     # Streaming
@@ -542,6 +642,15 @@ class OpenAIStreamClient:
         Tool-call fragments are accumulated by `index`. The
         `arguments` field is a string that arrives in pieces; it is
         concatenated, never JSON-parsed until the stream ends.
+
+        JSON handling:
+          Each SSE frame body is external input. A well-formed frame
+          goes straight through json.loads(). A malformed frame (some
+          proxies emit trailing commas, some backends emit truncated
+          chunks) is routed through the unified repair preprocessor;
+          only if the repair also fails is the frame skipped. A
+          malformed frame can therefore NEVER abort the streaming
+          loop.
         """
         tool_calls_acc: Dict[int, Dict[str, Any]] = {}
 
@@ -566,9 +675,15 @@ class OpenAIStreamClient:
             if data == "[DONE]":
                 break
 
-            try:
-                obj = json.loads(data)
-            except json.JSONDecodeError:
+            # INBOUND parsing with unified repair fallback.
+            obj = self._parse_inbound_json(
+                data,
+                source="sse_client._read_sse_stream",
+            )
+            if obj is None:
+                # Frame is genuinely uninterpretable. Skip it without
+                # aborting the stream; a subsequent frame is likely
+                # still valid.
                 continue
 
             delta = self._extract_delta(obj)
@@ -608,6 +723,14 @@ class OpenAIStreamClient:
         Fragments that are not dicts are ignored. Missing fields do
         not overwrite existing values; only non-empty strings are
         written.
+
+        Defensive behaviour:
+          Some non-conformant backends emit `arguments` as a number,
+          a boolean, or even a nested JSON object instead of a
+          string. `str`-concatenation would raise a TypeError and
+          abort the entire streaming loop. To preserve the "a single
+          bad frame cannot kill the stream" invariant, any non-str
+          fragment is coerced with `str()` before being appended.
         """
         for tc in fragments:
             if not isinstance(tc, dict):
@@ -636,8 +759,17 @@ class OpenAIStreamClient:
 
             if fn.get("name"):
                 acc[idx]["function"]["name"] = fn["name"]
-            if fn.get("arguments"):
-                acc[idx]["function"]["arguments"] += fn["arguments"]
+
+            arg_fragment = fn.get("arguments")
+            if arg_fragment is not None and arg_fragment != "":
+                if isinstance(arg_fragment, str):
+                    acc[idx]["function"]["arguments"] += arg_fragment
+                else:
+                    # Defensive: coerce non-str fragments (int, bool,
+                    # dict, list, ...) to a string so that a
+                    # non-conformant backend cannot abort the stream
+                    # with a TypeError.
+                    acc[idx]["function"]["arguments"] += str(arg_fragment)
 
     @staticmethod
     def _extract_delta(

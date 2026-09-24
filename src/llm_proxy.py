@@ -13,10 +13,21 @@ LF_Sequenced_Notify.
 
 New in this revision
 --------------------
-* Shared code (frozen detection, JSON helpers, SSE client, session
-  state, logging, banner, capability matrix, option filtering) moved
-  to the llm_common package. This file now contains only the proxy
-  logic itself.
+* All JSON and string I/O on LingoFuse DataHandles is delegated to
+  lingofuse.lf_io. The _emit() helper calls lf_io.write_json() and
+  lf_io.cstr(). This guarantees:
+    - ensure_ascii=False on every payload (no \\uXXXX escapes)
+    - NUL termination on every string written to a DataHandle
+    - explicit NUL on every c_char_p LF_* parameter
+  The dependency on llm_common.headers.jdump and on
+  lingofuse._lf_native.LF_WriteBuffer was removed from this file.
+* Follow-up to the relocation of the lf_io module from the
+  llm_common package into the lingofuse package: this file now
+  imports from lingofuse.lf_io, keeping llm_proxy a pure consumer
+  of the lingofuse package for all DataHandle I/O.
+* Shared code (frozen detection, session state, logging, banner,
+  capability matrix, option filtering, SSE client) lives in the
+  llm_common package. This file contains only the proxy logic.
 * Attachment support: a `generate` request may carry a list of text
   and image attachments. Text attachments are merged into the user
   message; image attachments are forwarded as OpenAI multi-modal
@@ -84,7 +95,11 @@ from typing import Any, Dict, List, Optional
 
 from lingofuse import Server, set_option, check_app
 from lingofuse.core import DataHandle
-from lingofuse._lf_native import LF_Sequenced_Notify, LF_WriteBuffer
+from lingofuse._lf_native import LF_Sequenced_Notify
+from lingofuse.lf_io import (
+    cstr,
+    write_json,
+)
 
 from llm_common.attachments import (
     Attachment,
@@ -101,7 +116,6 @@ from llm_common.capabilities import (
     split_supported,
 )
 from llm_common.headers import (
-    jdump,
     load_key_from_file,
     parse_extra_headers,
 )
@@ -903,8 +917,12 @@ class LLMProxyService:
         """
         Send one structured JSON event to the client via the notify API.
 
-        Payload is serialized with ensure_ascii=False so that
-        non-ASCII content (Chinese, emoji) is preserved verbatim.
+        All payload I/O goes through lingofuse.lf_io:
+          * write_json() serializes `payload` with ensure_ascii=False
+            (no \\uXXXX escapes) and appends the NUL terminator
+            required by the Pascal-side LF_ReadString.
+          * cstr() supplies NUL-terminated UTF-8 bytes for the
+            c_char_p parameter of LF_Sequenced_Notify.
 
         Failures (client offline, DataHandle issues) are logged at
         WARNING level and swallowed. They must never crash the worker
@@ -913,16 +931,8 @@ class LLMProxyService:
         hnd = None
         try:
             hnd = DataHandle(CONFIG.notify_api)
-            data = jdump(payload) + b"\x00"
-            written = LF_WriteBuffer(hnd.raw, data, len(data))
-            if written != len(data):
-                logger.warning(
-                    "Partial write to DataHandle: %d/%d bytes",
-                    written, len(data),
-                )
-            LF_Sequenced_Notify(
-                sess.client_name.encode("utf-8"), hnd.raw,
-            )
+            write_json(hnd.raw, payload)
+            LF_Sequenced_Notify(cstr(sess.client_name), hnd.raw)
         except Exception as e:
             logger.warning("Notify to '%s' failed: %s",
                            sess.client_name, e)

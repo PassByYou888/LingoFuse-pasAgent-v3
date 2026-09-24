@@ -1,18 +1,19 @@
 # LingoFuse LLM 生态体系使用指南
 
-> **文档版本**：v5.1（v3 架构重写版 · 能力边界修正版）
-> **最后更新**：2026-09-17
+> **文档版本**：v5.2（v3 架构重写版 · 目录对齐版）
+> **最后更新**：2026-09-24
 > **适用组件**：`mcp_api_tool`、`llm_proxy_tool`、`llm_proxy`、`llm_client_v3`、`llm_service`
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) — LTB 命令行手册
 > - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) — 纯转发代理手册
 > - [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) — 250+ 后端兼容清单
 > - [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) — 本地推理服务手册
-> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
-> - [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) — 版本演进
 > - [`llm_client_v3.md`](llm_client_v3.md) — Pascal 客户端 SDK 文档
+> - [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) — Structured Output 学习指南
 > - [`pascal_agent_api_ref_json.md`](pascal_agent_api_ref_json.md) — `agent_main` / `register_agent` JSON 详解
 > - [`lingofuse/Bridge_User_Guide.md`](lingofuse/Bridge_User_Guide.md) — HTTP 桥接网关
+> - [`QUICK_START_LLM_STACK.md`](QUICK_START_LLM_STACK.md) — LLM 栈快速上手
+> - [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) — Pascal 核心层完整指南
 
 ---
 
@@ -25,7 +26,7 @@
 3. **想用工具（MCP / LTB）** → 读第四章「两条工具执行路径」
 4. **想了解多模态** → 读第五章「多模态能力」
 5. **想知道协议和能力发现** → 读第六、七章
-6. **遇到问题** → 直接读第九章「故障排查」，或翻 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md)
+6. **遇到问题** → 直接读第九章「故障排查」
 
 ---
 
@@ -232,6 +233,7 @@ mindmap
 - 资源安全：`CleanupPartialConnect` 保证失败路径也释放资源
 
 **详细文档** → [`llm_client_v3.md`](llm_client_v3.md)
+**Structured Output 学习指南** → [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md)
 **开发者切入指南** → [`../../Pascal_Integration_Guide.md`](../../Pascal_Integration_Guide.md)
 
 ---
@@ -483,10 +485,9 @@ flowchart TB
 - **本地推理 + 多模态**：❌ **不支持**——`llm_service` 是纯文本服务
 
 > 📖 多模态的具体参数、请求格式、后端配置，请参考：
-> - [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)
+> - [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)
 > - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) 第 5.5 节
 > - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) 第 4.5 节
-> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8 系列
 
 ---
 
@@ -710,7 +711,7 @@ flowchart LR
 **步骤**：
 
 1. 在 LM Studio 加载 **VLM（如 Qwen2-VL / Nemotron Omni + mmproj）**
-2. 启动 `llm_proxy_tool.exe --backend-url http://127.0.0.1:1234/v1 --backend-model "your-vlm-id"`
+2. 启动 `llm_proxy_tool.exe --backend-url http://127.0.0.1:1234/v1 --backend-model "your-vlm-id" --vision`
 3. 客户端（`llm_client_v3`）用 `GenerateWithImageFile` 发图
 4. LTB 转发到 VLM，返回识别结果
 
@@ -775,28 +776,25 @@ flowchart TB
 
 ### 9.1 症状速查表
 
-> 下表「参考」列的 `P0-1`、`P0-4` 等编号，对应 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中的条目 ID。请直接到该文档检索对应编号以获取完整说明。
+| 症状 | 可能原因 | 排查方向 |
+|------|----------|:--------:|
+| 服务端刷屏 `no found app` | `client_name` 不是真实注册的 App 名 | Pascal 核心层指南 `LF-APP-003` |
+| 客户端延迟数秒才收到第一批 token | SSE 缓冲 | 检查后端 gzip / 反代 |
+| 服务端启动后立即退出 | `main()` 缺少阻塞主循环 | 检查启动命令 |
+| 思考阶段无输出，之后突然全部出现 | `reasoning_content` 被丢弃 | 检查后端 SSE 帧格式 |
+| `set_system_message` 返回 `unsupported` | 当前是 `llm_proxy` 或 `llm_proxy_tool` | 用 `create_session` 传 `system_message` |
+| 多会话输出串台 | 客户端未按 `session_id` 过滤 | 客户端 SDK 会话过滤 |
+| 中文乱码 | 未使用 `TBytes` 全程 UTF-8 | Pascal 核心层指南 `LF-XLANG-002` |
+| 关闭窗口时崩溃 | `FormClose` 直接 Shutdown | Pascal 核心层指南 `LF-CLEAN-001` |
+| 新的 system prompt 不生效 | 未走 `CreateSession` 路径 | 改走 `CreateSession(system_message)` |
+| **LTB 启动了但工具不执行** | `--enable-tools` 未开 / middleware 不可连 / 信标未启动 | LTB 手册 Q1 |
+| **LTB 与 mcp_api_tool 同时启动冲突** | 二者 `reg_agent` 名字相同 | LTB 手册 Q3 |
+| **LTB 启动时报 `LF_PrepareDone returned 0`** | middleware 与 Server.start 竞争 | LTB 手册 Q2 |
+| **LTB 收到的 `tool_calls` 参数为空** | SSE 分片未按 `index` 拼接 `arguments` | LTB 手册 Q4 |
+| **客户端发图片但后端不认** | 后端非 VLM / `--backend-model` 未指向 VLM | LTB 手册 Q11 |
+| **客户端把图片发给 `llm_service`** | `llm_service` 不支持多模态 | Service 手册 Q14 |
 
-| 症状 | 可能原因 | 参考 |
-|------|----------|:----:|
-| 服务端刷屏 `no found app` | `client_name` 不是真实注册的 App 名 | P0-1 |
-| 客户端延迟数秒才收到第一批 token | `requests` 的 SSE 缓冲 | P0-4 |
-| 服务端启动后立即退出 | `main()` 缺少阻塞主循环 | P0-5 |
-| 思考阶段无输出，之后突然全部出现 | `reasoning_content` 被丢弃 | P0-6 |
-| `set_system_message` 返回 `unsupported` | 当前是 `llm_proxy` 或 `llm_proxy_tool` | P6-3 |
-| 多会话输出串台 | 客户端未按 `session_id` 过滤 | P6-4 |
-| 中文乱码 | 未使用 `TBytes` 全程 UTF-8 | P2-1 |
-| 关闭窗口时崩溃 | `FormClose` 直接 Shutdown | P4-2 |
-| 新的 system prompt 不生效 | 未走 `CreateSession` 路径 | P4-5 |
-| **LTB 启动了但工具不执行** | `--enable-tools` 未开 / middleware 不可连 / 信标未启动 | P7-1 |
-| **LTB 与 mcp_api_tool 同时启动冲突** | 二者 `reg_agent` 名字相同 | P7-2 |
-| **LTB 启动时报 `LF_PrepareDone returned 0`** | middleware 与 Server.start 竞争 | P7-3 |
-| **LTB 收到的 `tool_calls` 参数为空** | SSE 分片未按 `index` 拼接 `arguments` | P7-4 |
-| **客户端发图片但后端不认** | 后端非 VLM / `--backend-model` 未指向 VLM | P8-1 |
-| **多模态在工具循环中重复发送** | 缺历史占位符 | P8-2 |
-| **客户端把图片发给 `llm_service`** | `llm_service` 不支持多模态 | P8-3 |
-
-完整排查指南和所有坑的索引，请直接查阅 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md)。
+完整排查指南请查阅对应的专项手册（`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md` / `src/LingoFuse_LLM_Proxy_CLI_Guide.md` / `src/LingoFuse_LLM_Service_CLI_guide.md`）。
 
 ### 9.2 路径选择排查
 
@@ -823,13 +821,16 @@ flowchart TD
     Q3 -->|否| X3["❌ 显式指定 --backend-model"]
     Q3 -->|是| Q4{"附件格式正确?"}
     Q4 -->|否| X4["❌ 检查 kind=image, data_b64 非空"]
-    Q4 -->|是| OK["✅ 应该工作"]
+    Q4 -->|是| Q5{"--vision 传了吗?"}
+    Q5 -->|否| X5["❌ 服务端启动加 --vision"]
+    Q5 -->|是| OK["✅ 应该工作"]
 
     style START fill:#1A5490,stroke:#0D2F52,stroke-width:3px,color:#FFFFFF
     style X1 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style X2 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style X3 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style X4 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
+    style X5 fill:#922B21,stroke:#5A1A14,stroke-width:3px,color:#FFFFFF
     style OK fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
 ```
 
@@ -868,22 +869,29 @@ mindmap
 | [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 🟣 **纯转发代理命令行手册**（含多模态转发） |
 | [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | **250+ 后端兼容清单**（LTB 亦适用） |
 | [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 🟢 **本地推理服务命令行手册**（纯文本） |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | **踩坑大全**——症状 / 根因 / 正确做法（含 P8 多模态专项） |
-| [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
 | [`llm_client_v3.md`](llm_client_v3.md) | **Pascal 客户端 SDK 文档** |
+| [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) | **Structured Output 完整学习指南** |
 | [`pascal_agent_api_ref_json.md`](pascal_agent_api_ref_json.md) | `agent_main` / `register_agent` JSON 结构详解 |
 | [`lingofuse/Bridge_User_Guide.md`](lingofuse/Bridge_User_Guide.md) | HTTP 桥接网关使用指南 |
 | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含踩坑知识库） |
+| [`QUICK_START_LLM_STACK.md`](QUICK_START_LLM_STACK.md) | LLM 栈快速上手 |
+| [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
 
 ### 根目录相关文档
 
 | 文档 | 说明 |
 |------|------|
-| [`../readme.md`](../../readme.md) | 项目总览与四大核心应用组件 |
-| [`../Pascal_Integration_Guide.md`](../../Pascal_Integration_Guide.md) | **Pascal 开发者切入指南** |
-| [`../Build_Guide.md`](../../Build_Guide.md) | 编译指南（含 `llm_client_v3` / `llm_tool_v3`） |
-| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署（**能力边界已修正**） |
-| [`../code_generate_mcp.md`](../code_generate_mcp.md) | 代码生成器使用手册（Pascal + Python 双输出） |
+| [`../readme.md`](../readme.md) | 项目总览与四大核心应用组件 |
+| [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | **Pascal 开发者切入指南** |
+| [`../Build_Guide.md`](../Build_Guide.md) | 编译指南（含 `llm_client_v3` / `llm_tool_v3`） |
+
+### 代码生成器
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 一份声明 → **几十种目标语言的 API 接口**。声明规范、使用手册、生成器源码与预编译包均以该仓库为准。
 
 ---
 
@@ -903,6 +911,6 @@ mindmap
 
 ---
 
-**文档版本**：v5.1（v3 架构重写版 · 能力边界修正版——明确 `llm_service` 不支持多模态、`vision=0` 的语义、`llm_client_v3` 命名、`250+` 兼容数、SDK 文档索引）
+**文档版本**：v5.2（v3 架构重写版 · 目录对齐版——移除失效文档引用 `LingoFuse_LLM_Pitfalls_For_AI.md` / `LingoFuse_LLM_Service_Work_Summary.md` / `code_generate_mcp.md`；MCP-API 生成器统一指向 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)；新增 `llm_client_v3_Structured_Output_Learning_Guide.md` / `QUICK_START_LLM_STACK.md` 引用；对齐实际仓库文档清单）
 **维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-language_middleware.py - v7.4 (LingoFuse Native Multi-Language Middleware)
+language_middleware.py - v7.7 (LingoFuse Native Multi-Language Middleware)
 
 DESCRIPTION
     This module provides a language-agnostic middleware for LingoFuse,
@@ -19,6 +19,74 @@ DESCRIPTION
     The middleware uses direct ctypes calls to the LingoFuse dynamic
     library and is fully thread-safe. It implements a singleton pattern
     to share the same connection across multiple components.
+
+CHANGELOG (v7.7)
+    * JSON handling unification (A2 / N1 / N2):
+      - A2: The DEBUG-only pretty-print of the tool list response now
+        goes through the standard library `json.dumps` with a full
+        policy match to `lingofuse.lf_io.dumps_json`
+        (`ensure_ascii=False, default=str`). The only intentional
+        deviation is `indent=2`, kept for human readability in the
+        debug stream; the deviation is documented at the call site.
+        The previous `import json as _json` alias was removed; the
+        module now imports `json` once at the top.
+      - N1: `_fetch_tools_from_backend` now validates that the parsed
+        response is a JSON object (dict) before calling `.get()`. A
+        non-object response (list, string, number, bool, null) is
+        treated as a soft failure: the tool list is cleared and the
+        method returns, exactly as it does for a transport-level
+        failure. Previously a non-object response would raise
+        AttributeError and abort the caller's connection attempt.
+      - N2: The per-tool loop in the same method now skips entries
+        that are not JSON objects. A malformed tools array (for
+        example one containing a bare string) previously raised
+        AttributeError on `t.get(...)`; it now produces a per-entry
+        warning and is skipped, so the rest of the list is still
+        usable.
+      The above are the only behavioural changes. All public API
+      signatures, the singleton lifecycle, and the LingoFuse DataHandle
+      I/O paths (which already went through `lf_io.read_json` /
+      `lf_io.write_json` / `lf_io.read_json_or_bytes`) are unchanged.
+
+    * JSON I/O audit (no code change needed):
+      - `_reg_tool_callback`, `_fetch_tools_from_backend`, `log`, and
+        `call_tool` all read and write LF DataHandle payloads through
+        `lingofuse.lf_io`. That module is the single source of truth
+        for the toolchain JSON policy (`ensure_ascii=False`,
+        `default=str`, NUL framing, NUL-tolerant reads). No raw
+        `json.loads` / `json.dumps` call exists on the LF payload
+        path.
+      - The only direct `json.dumps` call is the diagnostic pretty
+        print addressed by A2 above.
+
+CHANGELOG (v7.6)
+    * All references to llm_common.lf_io were updated to
+      lingofuse.lf_io, following the relocation of the lf_io module
+      from the llm_common package into the lingofuse package. This
+      keeps the dependency direction intact: the middleware is a
+      consumer of the lingofuse package, and the unified DataHandle
+      I/O now lives inside that package.
+
+CHANGELOG (v7.5)
+    * All JSON and string I/O on LingoFuse DataHandles is now delegated
+      to the lf_io module. The local _write_string / _read_string
+      helpers were removed. Every read and write of a payload now goes
+      through lf_io.read_json / lf_io.read_json_or_bytes /
+      lf_io.write_json / lf_io.cstr. This guarantees:
+        - ensure_ascii=False on every JSON payload (no \\uXXXX escapes)
+        - NUL termination on every string written to a DataHandle
+        - NUL-tolerant reads (accepts raw JSON from HTTP bridges)
+        - explicit NUL on every c_char_p LF_* parameter
+      Request and response handles in _fetch_tools_from_backend(),
+      log(), and call_tool() are now freed inside finally blocks, so
+      an exception during payload I/O can no longer leak a DataHandle.
+    * The native import list was reduced to only the functions that
+      this module actually calls at the C ABI level. Byte-level
+      LF_* functions (LF_WriteBuffer, LF_ReadBuffer, LF_GetPos,
+      LF_GetSize, LF_GetBuffer) are now owned exclusively by the
+      lf_io module. LF_SetPos is kept for a single local helper,
+      `_rewind`, that resets the read position before reading a
+      response.
 
 CHANGELOG (v7.4)
     * FIXED: `_cleanup()` ordering. The previous implementation called
@@ -109,19 +177,19 @@ NOTES
       consistency and avoids stale entries.
 
 DEPENDENCIES
-    - lingofuse package (must be installed or in PYTHONPATH)
+    - lingofuse package (must be installed or in PYTHONPATH), which
+      now provides lingofuse.lf_io for unified DataHandle I/O
     - Python 3.7+
 
 AUTHOR
     PassByYou888 / LingoFuse Team
 """
 
+import json
 import os
 import sys
-import json
 import threading
 import atexit
-import ctypes
 from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -144,28 +212,60 @@ _current_dir = os.path.dirname(os.path.abspath(__file__))
 if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 
+# ========================================================================
+# Low-level LingoFuse imports
+# ========================================================================
+#
+# Only the functions that this module calls directly at the C ABI level
+# are imported here. All byte-level payload I/O (writing/reading JSON,
+# NUL handling) is delegated to lingofuse.lf_io, which owns the
+# remaining LF_* functions.
+#
+# LF_SetPos is imported for a single local helper, `_rewind`, that
+# resets the read position of a freshly received response handle to 0
+# before reading it. This is a position-control operation, not payload
+# I/O, so it lives here rather than in lf_io.
 from lingofuse._lf_native import (
-    DataHnd, AppHnd,
+    DataHnd,
+    AppHnd,
     LF_CreateData,
     LF_FreeData,
     LF_CreateApp,
     LF_FreeApp,
     LF_RegisterCall,
-    LF_WriteBuffer,
-    LF_ReadBuffer,
-    LF_GetPos,
+    LF_Call,
+    LF_SetOption,
     LF_SetPos,
-    LF_GetSize,
-    LF_GetBuffer,
-    LF_PrepareClient,
     LF_ResetPrepare,
+    LF_PrepareClient,
     LF_PrepareDone,
     LF_ExitMainThread,
     LF_Shutdown,
-    LF_Call,
-    LF_SetOption,
     LF_CheckMainThread,
     LFCallFunc,
+)
+
+# ========================================================================
+# Unified LingoFuse DataHandle I/O
+# ========================================================================
+#
+# All JSON and string reads/writes on a LingoFuse DataHandle go through
+# lingofuse.lf_io. This module guarantees:
+#   * ensure_ascii=False  -> no \uXXXX escapes on the wire
+#   * NUL termination     -> matches Pascal's LF_ReadString
+#   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
+#   * explicit NUL on c_char_p LF_* parameters
+#
+# Every LF payload read in this file goes through read_json or
+# read_json_or_bytes; every LF payload write goes through write_json.
+# The only direct `json.dumps` call in the module is the DEBUG-only
+# pretty print in _fetch_tools_from_backend, which is intentionally
+# scoped to stderr diagnostics (see the comment at that call site).
+from lingofuse.lf_io import (
+    cstr,
+    read_json,
+    read_json_or_bytes,
+    write_json,
 )
 
 # ============================================================================
@@ -203,63 +303,19 @@ def _log_entry(entry: str):
 
 
 # ============================================================================
-# Manual string read/write helpers (using LF_ functions)
+# Position helper
 # ============================================================================
-def _write_string(hnd: DataHnd, s: bytes):
-    """Write bytes to a DataHandle with a null terminator."""
-    if len(s) > 0:
-        LF_WriteBuffer(hnd, s, len(s))
-    null = b'\x00'
-    LF_WriteBuffer(hnd, null, 1)
-
-
-def _read_string(hnd: DataHnd) -> bytes:
+def _rewind(hnd: DataHnd) -> None:
     """
-    Read a UTF-8 string from a DataHandle.
+    Reset the read/write position of a DataHandle to the start of its
+    buffer.
 
-    Behavior mirrors Pascal's LF_ReadString:
-      * Scan forward for a null byte (\\0).
-      * If found, return bytes up to (but not including) the null, and
-        advance the position past the null.
-      * If NOT found, return the entire remaining buffer and move the
-        position to the end.
-
-    This makes the function tolerant of inputs that were not
-    null-terminated (e.g. raw JSON from an HTTP bridge).
+    A freshly returned handle from LF_Call is normally already at
+    position 0, but the callback contract for LF_RegisterCall does not
+    guarantee the input handle's position. Rewinding before reading
+    makes the read deterministic in both cases.
     """
-    pos = LF_GetPos(hnd)
-    size = LF_GetSize(hnd)
-    if pos >= size:
-        return b''
-
-    ptr = LF_GetBuffer(hnd)
-    if not ptr:
-        return b''
-
-    cptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_byte))
-    end = pos
-    while end < size and cptr[end] != 0:
-        end += 1
-
-    if end < size:
-        # Null terminator found.
-        data_len = end - pos
-        if data_len == 0:
-            LF_SetPos(hnd, end + 1)
-            return b''
-        raw = (ctypes.c_byte * data_len)()
-        LF_ReadBuffer(hnd, raw, data_len)
-        LF_SetPos(hnd, end + 1)
-        return bytes(raw)
-    else:
-        # No null terminator: consume everything that remains.
-        data_len = size - pos
-        if data_len == 0:
-            return b''
-        raw = (ctypes.c_byte * data_len)()
-        LF_ReadBuffer(hnd, raw, data_len)
-        LF_SetPos(hnd, size)
-        return bytes(raw)
+    LF_SetPos(hnd, 0)
 
 
 # ============================================================================
@@ -303,6 +359,17 @@ def _reg_tool_callback(trigger: DataHnd, inp: DataHnd, out: DataHnd):
     The middleware deliberately does NOT modify its local tool cache
     here. The authoritative tool list is always fetched from
     `agent_main`. This callback only logs the event.
+
+    All payload I/O goes through lingofuse.lf_io: read_json() for the
+    request and write_json() for the response. Both enforce
+    ensure_ascii=False and NUL framing.
+
+    Exception isolation
+    -------------------
+    No exception is allowed to escape into the C stack. Every failure
+    path writes a JSON error response to `out` if possible; if writing
+    that response itself fails, the error is logged to stderr and the
+    callback returns.
     """
     global _mw_instance
     if _mw_instance is None:
@@ -311,12 +378,12 @@ def _reg_tool_callback(trigger: DataHnd, inp: DataHnd, out: DataHnd):
         return
 
     try:
-        LF_SetPos(inp, 0)
-        raw = _read_string(inp)
-        if not raw:
-            raise ValueError("Empty input")
-
-        req = json.loads(raw.decode('utf-8'))
+        # Rewind to the start of the input buffer. The callback contract
+        # does not guarantee the position, so reset it before reading.
+        _rewind(inp)
+        req = read_json(inp)
+        if not isinstance(req, dict):
+            raise ValueError("Request must be a JSON object")
 
         # Field names must match the Pascal producer (do_register_agent).
         name = req.get('name')
@@ -336,23 +403,25 @@ def _reg_tool_callback(trigger: DataHnd, inp: DataHnd, out: DataHnd):
         # Log the registration event. Do NOT touch self._tools here.
         _mw_instance._register_tool(name, description, target_app, target_api)
 
-        resp = json.dumps(
-            {"status": "ok",
-             "message": f"Tool '{name}' registered successfully"},
-            ensure_ascii=False,
-        )
-        _write_string(out, resp.encode('utf-8'))
+        write_json(out, {
+            "status": "ok",
+            "message": f"Tool '{name}' registered successfully",
+        })
         sys.stderr.write(
             f"[reg_tool] Registered tool: {name} -> {target_app}.{target_api}\n"
         )
         sys.stderr.flush()
 
     except Exception as e:
-        err_msg = json.dumps(
-            {"status": "error", "message": str(e)},
-            ensure_ascii=False,
-        )
-        _write_string(out, err_msg.encode('utf-8'))
+        # Best-effort error response. If writing the error response
+        # itself fails, log to stderr and continue; the caller sees an
+        # empty output handle, which it treats as an error.
+        try:
+            write_json(out, {"status": "error", "message": str(e)})
+        except Exception as write_err:
+            sys.stderr.write(
+                f"[reg_tool] Failed to write error response: {write_err}\n"
+            )
         sys.stderr.write(f"[reg_tool] Error: {e}\n")
         sys.stderr.flush()
 
@@ -411,14 +480,15 @@ class LanguageMiddleware:
             self._connection_attempted = False
             self._connect_lock = threading.Lock()
 
-            # Global LingoFuse options
-            LF_SetOption(b"Wait_Connection_ReadyOk", b"True")
-            LF_SetOption(b"Wait_TimeOut", str(timeout_ms).encode('utf-8'))
+            # Global LingoFuse options. cstr() supplies NUL-terminated
+            # UTF-8 bytes for the c_char_p parameters.
+            LF_SetOption(cstr("Wait_Connection_ReadyOk"), cstr("True"))
+            LF_SetOption(cstr("Wait_TimeOut"), cstr(str(timeout_ms)))
 
             # Local app that hosts register_agent.
             self._app_hnd = LF_CreateApp(
-                self._reg_agent_app_name.encode('utf-8'),
-                b"Registration Agent for tool discovery"
+                cstr(self._reg_agent_app_name),
+                cstr("Registration Agent for tool discovery"),
             )
             if not self._app_hnd:
                 raise LanguageConnectionError("Failed to create App")
@@ -426,10 +496,10 @@ class LanguageMiddleware:
             if self._register_agent_api:
                 ret = LF_RegisterCall(
                     self._app_hnd,
-                    self._register_agent_api.encode('utf-8'),
-                    b"Register a new agent tool",
+                    cstr(self._register_agent_api),
+                    cstr("Register a new agent tool"),
                     None,
-                    _reg_tool_callback
+                    _reg_tool_callback,
                 )
                 if ret != 1:
                     sys.stderr.write(
@@ -500,7 +570,7 @@ class LanguageMiddleware:
                     f"[LanguageMiddleware] Connecting to {self._endpoint}...\n"
                 )
                 LF_ResetPrepare()
-                LF_PrepareClient(self._endpoint.encode('utf-8'), self._app_hnd)
+                LF_PrepareClient(cstr(self._endpoint), self._app_hnd)
 
                 if LF_PrepareDone() != 1:
                     raise LanguageConnectionError(
@@ -558,12 +628,48 @@ class LanguageMiddleware:
         """
         Call the backend's agent_main API to retrieve the list of tools.
         Populates the internal _tools dictionary.
+
+        All payload I/O goes through lingofuse.lf_io. The request
+        handle and the response handle are released in finally blocks
+        so that an exception during payload I/O cannot leak a handle.
+
+        Response shape validation (N1 / N2)
+        -----------------------------------
+        The response is expected to be a JSON object whose "tools" key
+        is a list of tool descriptors. Two defensive checks are applied
+        because the backend is external and can misbehave:
+
+          * N1: if the top-level response is not a JSON object, the
+            tool list is cleared and the method returns. Previously a
+            non-object response (a bare list, string, or number) would
+            raise AttributeError on `data.get(...)` and abort the
+            caller's connection attempt. A non-object response is now
+            treated as a soft failure, matching the behaviour for a
+            transport-level error.
+
+          * N2: individual entries in the tools array that are not JSON
+            objects are skipped with a warning. A malformed entry (for
+            example a bare string) previously raised AttributeError on
+            `t.get(...)`; it is now ignored and the rest of the list
+            remains usable.
+
+        Both checks preserve the "a bad backend cannot abort the
+        connection attempt" invariant.
         """
         try:
-            req = LF_CreateData(self._agent_main_api.encode('utf-8'))
-            resp = LF_Call(self._tool_provider_app.encode('utf-8'),
-                           req, self._timeout_ms)
-            LF_FreeData(req)
+            req = LF_CreateData(cstr(self._agent_main_api))
+            if not req:
+                sys.stderr.write(
+                    "[LanguageMiddleware] Failed to get tool info: "
+                    "could not create request handle\n"
+                )
+                return
+            try:
+                resp = LF_Call(
+                    cstr(self._tool_provider_app), req, self._timeout_ms
+                )
+            finally:
+                LF_FreeData(req)
 
             if not resp:
                 sys.stderr.write(
@@ -571,28 +677,84 @@ class LanguageMiddleware:
                 )
                 return
 
-            LF_SetPos(resp, 0)
-            raw = _read_string(resp)
-            LF_FreeData(resp)
+            try:
+                _rewind(resp)
+                data = read_json(resp)
+            finally:
+                LF_FreeData(resp)
 
-            if not raw:
+            if data is None:
                 sys.stderr.write(
                     "[LanguageMiddleware] Failed to get tool info: empty response\n"
                 )
                 return
 
-            data = json.loads(raw.decode('utf-8'))
+            # N1: the response must be a JSON object. A non-object
+            # response is a soft failure: clear the cache and return.
+            if not isinstance(data, dict):
+                sys.stderr.write(
+                    "[LanguageMiddleware] Failed to get tool info: "
+                    f"response is {type(data).__name__}, not a JSON object\n"
+                )
+                self._tools.clear()
+                return
 
             if DEBUG_MODE:
-                formatted = json.dumps(data, indent=2, ensure_ascii=False)
-                sys.stderr.write(
-                    f"\n[LanguageMiddleware] Received tool info JSON:\n{formatted}\n\n"
-                )
+                # Pretty-print the received tool info for human
+                # inspection. This is a diagnostic path only; it goes
+                # to stderr and never touches a LingoFuse DataHandle.
+                #
+                # Policy alignment (A2):
+                #   The two policy-critical flags (ensure_ascii=False to
+                #   avoid \uXXXX escapes, default=str as a safety net)
+                #   match lingofuse.lf_io.dumps_json exactly. The only
+                #   intentional deviation is indent=2, kept for human
+                #   readability in the debug stream. The DEBUG output is
+                #   not a wire payload and is not subject to the LF JSON
+                #   contract, so the deviation is safe.
+                #
+                #   Errors inside this diagnostic block must never
+                #   affect the tool list; the whole block is wrapped in
+                #   a try/except so that a non-serializable value
+                #   cannot abort tool discovery.
+                try:
+                    formatted = json.dumps(
+                        data,
+                        indent=2,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    sys.stderr.write(
+                        f"\n[LanguageMiddleware] Received tool info JSON:\n{formatted}\n\n"
+                    )
+                except Exception as dump_err:
+                    sys.stderr.write(
+                        "[LanguageMiddleware] Failed to pretty-print "
+                        f"tool info for debug: {dump_err}\n"
+                    )
 
             tools = data.get('tools', [])
+            if not isinstance(tools, list):
+                # A "tools" key that is present but not an array is a
+                # malformed response. Treat it as an empty list rather
+                # than iterating over an arbitrary value.
+                sys.stderr.write(
+                    "[LanguageMiddleware] Failed to get tool info: "
+                    f"'tools' is {type(tools).__name__}, not an array\n"
+                )
+                self._tools.clear()
+                return
+
             # Replace the entire tool dictionary with the fresh list.
             self._tools.clear()
             for t in tools:
+                # N2: skip non-object entries instead of raising.
+                if not isinstance(t, dict):
+                    sys.stderr.write(
+                        "[LanguageMiddleware] Skipping malformed tool "
+                        f"entry of type {type(t).__name__}\n"
+                    )
+                    continue
                 name = t.get('name')
                 if not name:
                     continue
@@ -605,7 +767,7 @@ class LanguageMiddleware:
                 }
 
             sys.stderr.write(
-                f"\n[LanguageMiddleware] Retrieved {len(tools)} tools from backend:\n"
+                f"\n[LanguageMiddleware] Retrieved {len(self._tools)} tools from backend:\n"
             )
             for name, info in self._tools.items():
                 sys.stderr.write(
@@ -727,33 +889,35 @@ class LanguageMiddleware:
 
         Returns the backend's JSON response (dict) on success, None on
         failure.
+
+        All payload I/O goes through lingofuse.lf_io. The request and
+        response handles are released in finally blocks.
         """
         if not self._ensure_connected():
             sys.stderr.write("[log] Not connected, log message dropped.\n")
             return None
         try:
-            req = LF_CreateData(self._agent_log_api.encode('utf-8'))
-            payload = json.dumps({"message": message},
-                                 ensure_ascii=False).encode('utf-8')
-            _write_string(req, payload)
-
-            resp = LF_Call(self._tool_provider_app.encode('utf-8'),
-                           req, self._timeout_ms)
-            LF_FreeData(req)
+            req = LF_CreateData(cstr(self._agent_log_api))
+            if not req:
+                sys.stderr.write("[log] Failed to create request handle.\n")
+                return None
+            try:
+                write_json(req, {"message": message})
+                resp = LF_Call(
+                    cstr(self._tool_provider_app), req, self._timeout_ms
+                )
+            finally:
+                LF_FreeData(req)
 
             if not resp:
                 sys.stderr.write("[log] No response from backend.\n")
                 return None
 
-            LF_SetPos(resp, 0)
-            raw = _read_string(resp)
-            LF_FreeData(resp)
-
-            if not raw:
-                sys.stderr.write("[log] Empty response from backend.\n")
-                return None
-
-            return json.loads(raw.decode('utf-8'))
+            try:
+                _rewind(resp)
+                return read_json(resp)
+            finally:
+                LF_FreeData(resp)
         except Exception as e:
             sys.stderr.write(f"[log] Failed to send log: {e}\n")
             sys.stderr.flush()
@@ -768,6 +932,11 @@ class LanguageMiddleware:
             LanguageCallError if the tool is not registered or the call
             fails.
         Returns the parsed response (usually a dict) from the backend.
+
+        All payload I/O goes through lingofuse.lf_io. The request and
+        response handles are released in finally blocks. A backend
+        response that is not valid JSON is returned as raw bytes,
+        matching the historical behaviour of this method.
         """
         if not self._ensure_connected():
             raise LanguageConnectionError("Not connected to backend")
@@ -781,15 +950,22 @@ class LanguageMiddleware:
         target_app = tool['target_app']
         target_api = tool['target_api']
 
-        # Build the request with the arguments as JSON.
-        # ensure_ascii=False keeps non-ASCII characters (e.g. Chinese)
-        # intact.
-        req = LF_CreateData(target_api.encode('utf-8'))
-        payload = json.dumps(arguments, ensure_ascii=False).encode('utf-8')
-        _write_string(req, payload)
+        # Create the request handle. cstr() supplies the NUL-terminated
+        # UTF-8 bytes expected by LF_CreateData's c_char_p parameter.
+        req = LF_CreateData(cstr(target_api))
+        if not req:
+            error_msg = f"Failed to create request handle for tool '{tool_name}'"
+            sys.stderr.write(f"[call_tool] {error_msg}\n")
+            raise LanguageCallError(error_msg)
 
-        resp = LF_Call(target_app.encode('utf-8'), req, self._timeout_ms)
-        LF_FreeData(req)
+        try:
+            # write_json() guarantees ensure_ascii=False (no \uXXXX
+            # escapes) and appends the NUL terminator required by the
+            # Pascal-side LF_ReadString.
+            write_json(req, arguments)
+            resp = LF_Call(cstr(target_app), req, self._timeout_ms)
+        finally:
+            LF_FreeData(req)
 
         if not resp:
             error_msg = f"LF_Call returned null handle for tool '{tool_name}'"
@@ -798,27 +974,18 @@ class LanguageMiddleware:
                 _log_entry(f"[ERROR] {tool_name}: {error_msg}")
             raise LanguageCallError(error_msg)
 
-        LF_SetPos(resp, 0)
-        raw = _read_string(resp)
-        LF_FreeData(resp)
-
-        # Parse JSON if possible; otherwise return the raw bytes.
-        result = None
         try:
-            if raw:
-                result = json.loads(raw.decode('utf-8'))
-            else:
-                result = None
-        except Exception:
-            result = raw
+            _rewind(resp)
+            result = read_json_or_bytes(resp)
+        finally:
+            LF_FreeData(resp)
 
         if DEBUG_MODE:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             entry = (
                 f"[{timestamp}] {tool_name}\n"
-                f"  args: {json.dumps(arguments, ensure_ascii=False)}\n"
-                f"  raw response: {raw!r}\n"
-                f"  result: {json.dumps(result, ensure_ascii=False, default=str) if result is not None else 'None'}"
+                f"  args: {arguments!r}\n"
+                f"  result: {result!r}"
             )
             _log_entry(entry)
             sys.stderr.write(
@@ -897,7 +1064,7 @@ def get_default_middleware() -> LanguageMiddleware:
 
 
 if __name__ == "__main__":
-    print("=== LanguageMiddleware Self-test (v7.4, lazy connect) ===")
+    print("=== LanguageMiddleware Self-test (v7.7, lazy connect) ===")
     try:
         mw = LanguageMiddleware.get_instance()
         mw._ensure_connected()

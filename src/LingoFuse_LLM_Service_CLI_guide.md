@@ -1,16 +1,15 @@
 # LingoFuse LLM Service 命令行使用手册
 
 > **适用程序**：`llm_service.exe`（Windows）/ `llm_service`（Linux）
-> **文档版本**：v3.1（v3 架构重写版 · 能力边界修正版）
-> **最后更新**：2026-09-17
+> **文档版本**：v3.2（v3 架构重写版 · 目录对齐版）
+> **最后更新**：2026-09-24
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
 > - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) — 代理命令行手册
 > - [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) — LTB 命令行手册
 > - [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) — 后端兼容清单
-> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
-> - [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) — 版本演进
-> - [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) — 推荐模型下载
+> - [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) — Pascal 核心层完整指南
+> - [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) — 推荐模型下载
 
 ---
 
@@ -24,7 +23,7 @@
 | 2 | **多模态请用 `llm_proxy` / `llm_proxy_tool`** | 由 **VLM 后端**（如 LM Studio）加载多模态模型 + mmproj，代理**原样转发**图片附件。 |
 | 3 | **`llm_service` 是 v3 的辅助验证工具** | 它仍然可以**独立使用**（不需要信标、不需要工具提供者、不需要 MCP），但不再是"三种核心服务端之一"。 |
 
-> **为什么 `llm_service` 不支持多模态？** 本地推理路径的视觉编码器加载尚未实现。这是 v3 的已知边界，详见 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P8-3。
+> **为什么 `llm_service` 不支持多模态？** 本地推理路径的视觉编码器加载尚未实现。这是 v3 的已知边界。图片问答请改用 `llm_proxy` / LTB 转发到 VLM 后端（见 [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) 第 5.5 节与 [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) 第 4.5 节）。
 
 ---
 
@@ -143,7 +142,7 @@ NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf
 >
 > - `llm_service.exe` **不会扫描同目录下的所有 gguf 文件**。默认只加载上述固定文件名；如使用其他模型，**必须**通过 `--model-path` 显式指定。
 > - 若要用**推荐的多模态 Omni 模型**（`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf`）做**纯文本**推理，**必须显式传 `--model-path`**。
-> - **模型下载**：请参考 [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)。
+> - **模型下载**：请参考 [`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)。
 
 ### 3.2 动态库必须可加载
 
@@ -421,7 +420,8 @@ flowchart LR
 ```powershell
 .\llm_proxy_tool.exe `
   --backend-url http://127.0.0.1:1234/v1 `
-  --backend-model "qwen2-vl-7b-instruct"
+  --backend-model "qwen2-vl-7b-instruct" `
+  --vision
 ```
 
 > **客户端行为**：若 `llm_service` 收到携带 `attachments` 数组的请求，其中**只有文本附件**会被接受并合并到用户消息；**图片附件会被明确拒绝**（返回 `code: -1`，错误信息提示本地 VLM 路径未实现）。
@@ -1318,8 +1318,7 @@ LingoFuse 服务
 | [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册（多模态转发） |
 | [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | `llm_proxy_tool.exe`（LTB）命令行手册（多模态转发 + 工具） |
 | [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 250+ OpenAI 兼容后端清单 |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法 |
-| [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策 |
+| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含踩坑知识库） |
 | [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档 |
 
 ### 根目录相关文档
@@ -1328,11 +1327,19 @@ LingoFuse 服务
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
 | [`../Build_Guide.md`](../Build_Guide.md) | 编译指南 |
-| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署（能力边界已修正） |
+| [`../readme.md`](../readme.md) | 项目总览 |
+
+### 代码生成器
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 一份声明 → **几十种目标语言的 API 接口**。声明规范、使用手册、生成器源码与预编译包均以该仓库为准。
 
 ---
 
-**文档版本**：v3.1（v3 架构重写版 · 能力边界修正版——**删除虚构的"多模型配置"功能**、修正 `--reasoning-budget-message` 默认值、更新启动横幅示例与源码字段对齐、补充 thinking 优先级说明、明确"没有 `--mmproj` 参数"）
+**文档版本**：v3.2（v3 架构重写版 · 目录对齐版——移除失效引用 `LingoFuse_LLM_Pitfalls_For_AI.md` / `LingoFuse_LLM_Service_Work_Summary.md`；P8-3 引用改为直接指向 `LingoFuse_LLM_Proxy_CLI_Guide.md` 第 5.5 节与 `LingoFuse_LLM_Proxy_Tool_CLI_Guide.md` 第 4.5 节；MCP-API 生成器统一指向 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)；对齐实际仓库文档清单）
 
 **维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）

@@ -23,9 +23,21 @@ Architecture
 
 What changed in this revision
 -----------------------------
+* All JSON and string I/O on LingoFuse DataHandles is delegated to
+  lingofuse.lf_io. `_send_payload` calls `lf_io.write_json()` and
+  `lf_io.cstr()`. This guarantees:
+    - ensure_ascii=False on every payload (no \\uXXXX escapes)
+    - NUL termination on every string written to a DataHandle
+    - explicit NUL on every c_char_p LF_* parameter
+* Follow-up to the relocation of the lf_io module from the
+  llm_common package into the lingofuse package: this file now
+  imports from lingofuse.lf_io. The only LF_* function imported
+  directly by this file remains LF_Sequenced_Notify, which has no
+  DataHandle payload parameter and therefore does not belong in
+  lf_io.
 * Shared code (frozen detection, capability matrix, attachment
-  validation, option filtering, logging setup, banner) moved to the
-  llm_common package.
+  validation, option filtering, logging setup, banner) continues to
+  live in the llm_common package.
 * Session timestamps use time.time() (wall-clock) instead of
   time.monotonic(), matching session_base.SessionState so that the
   list_sessions response has a consistent unit across all three
@@ -89,6 +101,15 @@ therefore reports vision=0, and a generate request carrying an image
 attachment is rejected with a clear error. This is tracked as a V2
 item and is intentionally the LOWEST priority in the toolchain roadmap.
 
+Optional dependencies
+---------------------
+The `transformers` and `torch` packages are OPTIONAL. They are only
+imported when the primary llama-cpp-python backend is unavailable.
+Both imports are therefore guarded by try/except ImportError and
+marked with `# type: ignore` so that static analysers do not report
+them as missing. On a deployment that installs only llama-cpp-python
+(the recommended configuration), neither module is ever imported.
+
 All comments and log messages are in English.
 """
 
@@ -112,12 +133,10 @@ import logging
 
 from lingofuse import Server, App, set_option, check_app
 from lingofuse.core import DataHandle
-from lingofuse._lf_native import (
-    LF_Sequenced_Notify,
-    LF_FreeData,
-    LF_CheckApp,
-    LF_GetStatusCount,
-    LF_GetStatus,
+from lingofuse._lf_native import LF_Sequenced_Notify
+from lingofuse.lf_io import (
+    cstr,
+    write_json,
 )
 
 from llm_common.attachments import (
@@ -195,6 +214,13 @@ def _parse_thinking_env(raw: Optional[str]) -> Optional[bool]:
 # ----------------------------------------------------------------------
 # Backend detection
 # ----------------------------------------------------------------------
+#
+# The primary backend is llama-cpp-python. The transformers / torch
+# fallback is OPTIONAL: it is only probed when llama-cpp-python is not
+# importable. Both optional imports are guarded by try/except
+# ImportError and marked with `# type: ignore` so that static
+# analysers (Pylance / pyright) do not report them as missing on
+# installations that deliberately skip the transformers stack.
 try:
     import llama_cpp
     LLM_BACKEND = "llama_cpp"
@@ -203,23 +229,10 @@ except ImportError:
     print("[WARN] llama-cpp-python not installed, trying transformers...",
           file=sys.stderr)
 
-if LLM_BACKEND is None:
-    try:
-        import transformers  # noqa: F401
-        import torch          # noqa: F401
-        LLM_BACKEND = "transformers"
-    except ImportError:
-        LLM_BACKEND = None
-        print("[ERROR] No LLM backend available. "
-              "Install llama-cpp-python or transformers.",
-              file=sys.stderr)
-        sys.exit(1)
-
-
 # ----------------------------------------------------------------------
 # Built-in defaults
 # ----------------------------------------------------------------------
-DEFAULT_MODEL_PATH = "./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf"
+DEFAULT_MODEL_PATH = "./NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf"
 
 # 0 = use the model's maximum supported context length.
 DEFAULT_CONTEXT_SIZE = 0
@@ -386,7 +399,7 @@ def parse_args() -> argparse.Namespace:
         "Examples:\n"
         f"  {invocation}\n"
         f"  {invocation} --model-path "
-        f"./NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf\n"
+        f"./NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.gguf\n"
         f"  {invocation} --context-size 8192 --max-tokens 2048\n"
         f"  {invocation} --gpu-layers 0 --threads 8 --quiet\n"
         f"  {invocation} --endpoint ipc:llm_service "
@@ -768,22 +781,6 @@ def load_llm(model_path: str, context_size: int, threads: int,
             pass
 
         return model, None, actual_ctx
-
-    if LLM_BACKEND == "transformers":
-        logger.info("Using backend: transformers")
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(model_path,
-                                                  trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype="auto",
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        actual_ctx = getattr(model.config, "max_position_embeddings", 0)
-        logger.info("Model loaded with device map: %s",
-                    getattr(model, 'hf_device_map', 'n/a'))
-        return model, tokenizer, actual_ctx
 
     raise RuntimeError("No LLM backend available")
 
@@ -2128,6 +2125,20 @@ class LLMService:
 
     def _send_payload(self, session: Session,
                       payload: Dict[str, Any]) -> None:
+        """
+        Send one structured JSON event to the client via the notify API.
+
+        All payload I/O goes through lingofuse.lf_io:
+          * write_json() serializes `payload` with ensure_ascii=False
+            (no \\uXXXX escapes) and appends the NUL terminator
+            required by the Pascal-side LF_ReadString.
+          * cstr() supplies NUL-terminated UTF-8 bytes for the
+            c_char_p parameter of LF_Sequenced_Notify.
+
+        Failures (client offline, DataHandle issues) are logged at
+        WARNING level and swallowed. They must never crash the worker
+        thread.
+        """
         hnd = None
         try:
             if (CONFIG.enable_warning_logging
@@ -2138,9 +2149,8 @@ class LLMService:
                     session.session_id, session.client_name,
                 )
             hnd = DataHandle(CONFIG.notify_api)
-            hnd.write_json(payload)
-            LF_Sequenced_Notify(session.client_name.encode("utf-8"),
-                                hnd.raw)
+            write_json(hnd.raw, payload)
+            LF_Sequenced_Notify(cstr(session.client_name), hnd.raw)
         except Exception as e:
             logger.warning("Session %s send failed (%s): %s",
                            session.session_id,

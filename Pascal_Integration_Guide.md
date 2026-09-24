@@ -1,7 +1,7 @@
-# Pascal Integration Guide — pasAgent v3（V5.2 修正版）
+# Pascal Integration Guide — pasAgent v3（V5.3 修正版）
 
-> **文档版本**：V5.2（AI 协作重写版 · 自查修正版）
-> **最后更新**：2026-09-17
+> **文档版本**：V5.3（v3 目录对齐版）
+> **最后更新**：2026-09-24
 > **适用**：Pascal 开发者（默认你已经是老手）
 > **核心主张**：**你 + AI 一起做。你负责执行，AI 负责查文档。**
 
@@ -74,7 +74,7 @@ flowchart TB
 
     AUX --> B1["🟢 llm_service<br/>纯文本本地推理"]
 
-    DEV --> C1["💎 code_decl_to_mcp<br/>一份声明 → Pascal + Python"]
+    DEV --> C1["💎 MCP-API 生成器<br/>一份声明 → 无限语言"]
 
     style ROOT fill:#0D2F52,stroke:#000000,stroke-width:5px,color:#FFFFFF
     style APPS fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
@@ -82,6 +82,12 @@ flowchart TB
     style DEV fill:#8E44AD,stroke:#5B2C6F,stroke-width:4px,color:#FFFFFF
     style A2 fill:#922B21,stroke:#5A1A14,stroke-width:5px,color:#FFFFFF
 ```
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库，请一律访问：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 一份声明 → **几十种目标语言的 API 接口**。声明规范、使用手册、生成器源码与预编译包均以该仓库为准。
 
 ### 三条硬边界
 
@@ -144,7 +150,7 @@ flowchart TB
 flowchart LR
     A["✍️ 写声明"] --> B{"在 interface 段？<br/>顶层？<br/>参数只用基础类型？"}
     B -->|"是"| C["✅ 通过"]
-    B -->|"否"| D["📖 pascal_code_mcp_rule.md"]
+    B -->|"否"| D["📖 LingoFuse-Tools 的声明规范"]
 
     style A fill:#1A5490,stroke:#0D2F52,stroke-width:4px,color:#FFFFFF
     style C fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
@@ -154,7 +160,7 @@ flowchart LR
 **四条铁律**：`interface` 段 + 顶层 + 禁 `var/out` + 只用整数/浮点/字符串。
 
 **🎤 话术模板**：
-> 把 `pascal_code_mcp_rule.md` 全文丢给 AI，然后问：
+> 把 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 仓库中的 Pascal 声明规范丢给 AI，然后问：
 > 「我要暴露一个 Pascal 函数 `function DoXxx(...)`，请按这份规范**逐条检查**我写的是否合规。如果不合规，告诉我具体违反了第几节。」
 
 ---
@@ -163,13 +169,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["📄 Pascal / C 声明"] -->|"粘贴"| B["💎 code_decl_to_mcp.exe<br/>GUI 应用"]
+    A["📄 Pascal / C 声明"] -->|"粘贴"| B["💎 MCP-API 生成器<br/>（LingoFuse-Tools）"]
     B --> C1["🅿️ xxx_tool_provider_unit.pas"]
     B --> C2["🐍 xxx_tool_provider.py"]
+    B --> C3["🦀 / 🐹 / ☕ / 🔷 / …<br/>几十种目标语言"]
 
     style B fill:#9B59B6,stroke:#6C3483,stroke-width:5px,color:#FFFFFF
     style C1 fill:#F39C12,stroke:#B7791F,stroke-width:4px,color:#FFFFFF
     style C2 fill:#27AE60,stroke:#145A32,stroke-width:4px,color:#FFFFFF
+    style C3 fill:#5D6D7E,stroke:#2C3E50,stroke-width:4px,color:#FFFFFF
 ```
 
 **关键点**：
@@ -177,9 +185,11 @@ flowchart LR
 - 走完 5 个 Tab，最后一步复制产物
 - `.pas` → `lazbuild`；`.py` → 直接 `python` 跑
 
+> 📖 完整说明与最新版本：**[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)**
+
 **🎤 话术模板**：
-> 把 `code_generate_mcp.md` 丢给 AI，然后问：
-> 「我准备在 code_decl_to_mcp.exe 里粘贴我的声明。请告诉我**每个 Tab 我应该重点检查什么**，以及生成后 Pascal 侧要怎么编译。」
+> 把 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 仓库中的使用手册丢给 AI，然后问：
+> 「我准备在生成器里粘贴我的声明。请告诉我**每个 Tab 我应该重点检查什么**，以及生成后 Pascal 侧要怎么编译。」
 
 ---
 
@@ -281,12 +291,11 @@ flowchart LR
     style X fill:#922B21,stroke:#5A1A14,stroke-width:5px,color:#FFFFFF
 ```
 
-📖 **模型部署**：`NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`
+📖 **模型部署**：`src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`
 📖 **`--vision` 详解**：`src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md` 第 4.5 节
-📖 **P8 多模态坑**：`src/LingoFuse_LLM_Pitfalls_For_AI.md`
 
 **🎤 话术模板**：
-> 把 `NVIDIA-Nemotron-...md` 和 `src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md` 一起丢给 AI，然后问：
+> 把 `src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md` 和 `src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md` 一起丢给 AI，然后问：
 > 「我要用 LM Studio + Nemotron Omni 做图片问答。请按顺序列出**每一个操作**：LM Studio 里点什么、LTB 命令怎么敲、Pascal 客户端怎么调。任何一步我做错会报什么错？」
 
 ---
@@ -301,19 +310,19 @@ mindmap
       📖 Build_Guide.md
     老 Delphi 项目
       独立单元 + 最小侵入
-      📖 Pitfalls P4 系列
+      📖 src/LingoFuse_Pascal_Complete_Guide.md
     手机 / 跨平台
       HTTP Bridge
-      📖 lingofuse/Bridge_User_Guide.md
+      📖 src/lingofuse/Bridge_User_Guide.md
     GUI 工具
       先跑 llm_tool_v3 学套路
       📖 src/llm_client_v3.md
     商业部署
       LTB + 生产加固
-      📖 LTB CLI Guide
+      📖 src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md
     工业自动化
       离线优先
-      📖 LLM Service CLI Guide
+      📖 src/LingoFuse_LLM_Service_CLI_guide.md
 ```
 
 | 场景 | 关键点 |
@@ -340,17 +349,28 @@ flowchart TB
     L1 --> D1["src/LingoFuse_LLM_Ecosystem_User_Guide.md"]
     L1 --> D2["src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md"]
     L1 --> D3["src/llm_client_v3.md"]
-    L1 --> D4["src/LingoFuse_LLM_Pitfalls_For_AI.md"]
+    L1 --> D4["src/LingoFuse_Pascal_Complete_Guide.md"]
 
-    L2 --> E1["code_generate_mcp.md"]
-    L2 --> E2["pascal_code_mcp_rule.md"]
-    L2 --> E3["NVIDIA-Nemotron-...md"]
-    L2 --> E4["Build_Guide.md"]
+    L2 --> E1["src/LingoFuse_LLM_Proxy_CLI_Guide.md"]
+    L2 --> E2["src/LingoFuse_LLM_Service_CLI_guide.md"]
+    L2 --> E3["src/LingoFuse_LLM_Proxy_Compatibility_Guide.md"]
+    L2 --> E4["src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md"]
+    L2 --> E5["src/llm_client_v3_Structured_Output_Learning_Guide.md"]
+    L2 --> E6["src/QUICK_START_LLM_STACK.md"]
+    L2 --> E7["src/pascal_agent_api_ref_json.md"]
+    L2 --> E8["src/lingofuse/Bridge_User_Guide.md"]
+    L2 --> E9["Build_Guide.md"]
 
     style L0 fill:#0D2F52,stroke:#000000,stroke-width:5px,color:#FFFFFF
     style L1 fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
     style L2 fill:#B7791F,stroke:#7E5109,stroke-width:4px,color:#FFFFFF
 ```
+
+### 代码生成器
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
 
 ---
 
@@ -368,6 +388,6 @@ flowchart TB
 
 ---
 
-**文档版本**：V5.2（AI 协作重写版 · 自查修正版——修正三步走/四步矛盾、删除虚构 token 限制、修正二进制文件陈述、统一术语）
+**文档版本**：V5.3（v3 目录对齐版——移除失效文档引用 `LingoFuse_LLM_Pitfalls_For_AI.md`、`code_generate_mcp.md`、`pascal_code_mcp_rule.md`；MCP-API 生成器统一指向 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)；对齐实际仓库文档清单）
 **维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）

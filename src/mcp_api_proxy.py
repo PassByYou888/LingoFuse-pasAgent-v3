@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-mcp_api_proxy.py - Transparent stdio forwarder for MCP debugging (v2.5)
+mcp_api_proxy.py - Transparent stdio forwarder for MCP debugging (v2.6)
 
 Usage:
     python mcp_api_proxy.py <real_command> [args...]
@@ -11,6 +11,39 @@ Example:
 The proxy launches the real command as a child process and forwards stdin,
 stdout and stderr between the MCP client and the child. Every block of data
 is logged to `proxy.log` (placed next to this script) and to stderr.
+
+{!!!!!  NO JSON HANDLING  !!!!!}
+This proxy operates purely at the byte level. It does NOT call
+json.dumps or json.loads anywhere, does NOT touch a LingoFuse
+DataHandle, and does NOT need the lf_io module.
+
+The bytes that flow through it are opaque:
+
+    * From the MCP client to the child, they are raw JSON-RPC frames
+      framed by MCP's own transport protocol (one JSON object per
+      line, terminated by a newline). The proxy forwards them
+      unchanged.
+    * From the child to the MCP client, they are the same kind of
+      frames plus C-level diagnostic output emitted by the LingoFuse
+      native library. The proxy applies a per-line JSON-RPC filter
+      (only lines starting with '{' are forwarded) so that the MCP
+      client never sees the diagnostic output, but it does not parse
+      or re-serialize any of it.
+
+Because no parsing or serialization happens here, this file is
+explicitly OUTSIDE the scope of the lf_io unification. It has no
+JSON policy to unify.
+
+The only responsibility of this file is:
+    1. Spawn the child process with correct pipe semantics.
+    2. Forward bytes in both directions without modification (except
+       for the JSON-RPC line filter on the Server->LM channel).
+    3. Log every block to stderr and to proxy.log for debugging.
+
+CHANGELOG (v2.6)
+    * Documentation only: added an explicit note that this file does
+      not perform any JSON handling, and clarified why it is outside
+      the lf_io unification scope. No behavioural change.
 
 CHANGELOG (v2.5)
     * Removed the top-level `signal.signal(SIGINT, ...)` handler.
@@ -149,6 +182,10 @@ def _is_json_rpc_line(line: bytes) -> bool:
     so we deliberately do NOT accept '[' as a marker. This prevents
     diagnostic lines like `[INFO] ...` from being mistaken for
     JSON-RPC messages.
+
+    Note that this is a purely BYTE-LEVEL check on the first
+    non-whitespace byte of the line. No JSON parsing happens here;
+    the payload is forwarded verbatim once the filter accepts it.
     """
     stripped = line.lstrip(b' \t\r')
     if not stripped:
@@ -189,6 +226,9 @@ def pipe_reader(source, target, direction: str, json_filter: bool = False) -> No
     the forwarded stream but still logged.
 
     Broken pipes are treated as normal termination.
+
+    The bytes are forwarded byte-for-byte; no JSON parsing or
+    re-serialization is performed anywhere in this function.
     """
     line_buffer = bytearray()
 

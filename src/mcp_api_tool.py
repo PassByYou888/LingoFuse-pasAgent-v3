@@ -1,10 +1,70 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-mcp_api_tool.py - MCP Server for LingoFuse Backend (v2.42)
+mcp_api_tool.py - MCP Server for LingoFuse Backend (v2.45)
 
 DESCRIPTION
     MCP gateway between MCP clients and a LingoFuse backend.
+
+CHANGELOG (v2.45)
+    * F1 fix: call_tool now normalizes the raw value returned by
+      read_json_or_bytes before handing it to FastMCP. FastMCP
+      serializes tool return values to JSON before sending them to
+      the MCP client; a raw bytes value would raise a serialization
+      error and abort the entire MCP session. The new helper
+      _normalize_tool_result_for_mcp converts bytes into one of:
+        - a decoded dict, if the bytes are valid UTF-8 JSON;
+        - a decoded string, if the bytes are valid UTF-8 text;
+        - a structured {"__bytes_b64__": "..."} object otherwise.
+      Non-bytes values pass through unchanged, so all existing
+      behaviours (dict, str, int, list, None) are preserved
+      byte-for-byte.
+    * Restored `import base64` and `import json`. These were removed
+      in v2.43 when the file stopped calling json.loads / json.dumps
+      directly. The F1 normalization helper needs both again, and
+      they are now used in exactly one place (the byte-to-MCP
+      conversion), not for LF payload I/O.
+    * M4 audit: register_dynamic_tools was reviewed for the case of
+      non-ASCII parameter names coming from the backend tool schema.
+      The generated Python source uses repr() for every string
+      literal (both the tool name and each raw parameter name), and
+      repr() emits valid Python source that the exec() at the end
+      parses correctly for any Unicode input. The fallback Python
+      identifier used inside the function signature is restricted to
+      ASCII (arg_N / tool_N) so it can never collide with Python
+      keywords. No behavioural change is required; the reasoning is
+      documented in the register_dynamic_tools docstring.
+
+CHANGELOG (v2.44)
+    * All references to llm_common.lf_io were updated to
+      lingofuse.lf_io, following the relocation of the lf_io module
+      from the llm_common package into the lingofuse package. This
+      keeps the dependency direction intact: mcp_api_tool is a
+      consumer of the lingofuse package, and the unified DataHandle
+      I/O now lives inside that package instead of being split across
+      two packages.
+
+CHANGELOG (v2.43)
+    * All JSON and string I/O on LingoFuse DataHandles is delegated
+      to the lf_io module. The local _write_string / _read_string
+      helpers were removed, and the call_tool implementation was
+      rewritten to use lf_io.write_json / lf_io.read_json_or_bytes /
+      lf_io.cstr. This guarantees:
+        - ensure_ascii=False on every JSON payload (no \\uXXXX escapes)
+        - NUL termination on every string written to a DataHandle
+        - NUL-tolerant reads (accepts raw JSON from HTTP bridges)
+        - explicit NUL on every c_char_p LF_* parameter
+      The request and response handles are now freed inside finally
+      blocks, so an exception during payload I/O can no longer leak a
+      DataHandle.
+    * The lazy native-function loader was reduced to the four functions
+      mcp_api_tool actually calls: LF_CreateData, LF_FreeData, LF_Call,
+      LF_SetOption. Byte-level LF_* functions are now owned exclusively
+      by the lf_io module.
+    * Removed the top-level `import json` and `import ctypes` imports;
+      both became dead code after the changes above. `ctypes` is still
+      imported locally inside _setup_console for the Windows console
+      mode setup. (`import json` was restored in v2.45 for the F1 fix.)
 
 CHANGELOG (v2.42)
     * `signal_handler` now raises KeyboardInterrupt instead of calling
@@ -46,7 +106,8 @@ USAGE EXAMPLES
 
 DEPENDENCIES
     - fastmcp (>= 0.2.0) and pydantic
-    - lingofuse package (must be installed or in PYTHONPATH)
+    - lingofuse package (must be installed or in PYTHONPATH), which
+      now provides lingofuse.lf_io for unified DataHandle I/O
 """
 
 # ============================================================================
@@ -87,14 +148,14 @@ PROXY_PATH = DEFAULT_PROXY_PATH
 # STANDARD IMPORTS
 # ============================================================================
 import asyncio
+import base64
+import json
 import sys
 import os
 import io
 import logging
 import traceback
 import argparse
-import json
-import ctypes
 import keyword
 import multiprocessing
 import signal
@@ -166,6 +227,28 @@ except ImportError:
     generate_configs = None
 
 # ============================================================================
+# Unified LingoFuse DataHandle I/O
+# ============================================================================
+#
+# All JSON and string reads/writes on a LingoFuse DataHandle are
+# delegated to lingofuse.lf_io. This module guarantees:
+#   * ensure_ascii=False  -> no \uXXXX escapes on the wire
+#   * NUL termination     -> matches Pascal's LF_ReadString
+#   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
+#   * explicit NUL on c_char_p LF_* parameters
+#
+# Nothing in this file calls json.dumps / json.loads for LF DataHandle
+# payload I/O. The only json.loads call is inside
+# _normalize_tool_result_for_mcp, where it is used to unwrap a byte
+# payload that the backend already returned as JSON text (this is a
+# local convenience, not LF wire I/O).
+from lingofuse.lf_io import (
+    cstr,
+    read_json_or_bytes,
+    write_json,
+)
+
+# ============================================================================
 # Logging
 # ============================================================================
 _LOGGER: Optional[logging.Logger] = None
@@ -203,43 +286,30 @@ except ImportError as e:
 # ============================================================================
 # Lazy-loaded LingoFuse native functions
 # ============================================================================
+#
+# Only four LF_* functions are used directly by this file. All other
+# byte-level operations (writing JSON, reading JSON, NUL handling) are
+# delegated to lingofuse.lf_io, which owns those native calls. This
+# keeps the C-ABI surface used by mcp_api_tool at the minimum needed
+# to create a request handle, invoke the remote API, free the handle,
+# and (in stdio mode) suppress console output.
 LF_CreateData = None
 LF_FreeData = None
-LF_WriteBuffer = None
-LF_ReadBuffer = None
-LF_GetPos = None
-LF_SetPos = None
-LF_GetSize = None
-LF_GetBuffer = None
 LF_Call = None
 LF_SetOption = None
 
 def _ensure_native_loaded():
-    global LF_CreateData, LF_FreeData, LF_WriteBuffer, LF_ReadBuffer
-    global LF_GetPos, LF_SetPos, LF_GetSize, LF_GetBuffer, LF_Call
-    global LF_SetOption
+    global LF_CreateData, LF_FreeData, LF_Call, LF_SetOption
     if LF_CreateData is not None:
         return
     from lingofuse._lf_native import (
         LF_CreateData as _CreateData,
         LF_FreeData as _FreeData,
-        LF_WriteBuffer as _WriteBuffer,
-        LF_ReadBuffer as _ReadBuffer,
-        LF_GetPos as _GetPos,
-        LF_SetPos as _SetPos,
-        LF_GetSize as _GetSize,
-        LF_GetBuffer as _GetBuffer,
         LF_Call as _Call,
         LF_SetOption as _SetOption,
     )
     LF_CreateData = _CreateData
     LF_FreeData = _FreeData
-    LF_WriteBuffer = _WriteBuffer
-    LF_ReadBuffer = _ReadBuffer
-    LF_GetPos = _GetPos
-    LF_SetPos = _SetPos
-    LF_GetSize = _GetSize
-    LF_GetBuffer = _GetBuffer
     LF_Call = _Call
     LF_SetOption = _SetOption
 
@@ -288,53 +358,6 @@ def _ensure_language_middleware_loaded():
 middleware = None
 
 # ============================================================================
-# DataHandle helpers
-# ============================================================================
-def _write_string(hnd, s: bytes):
-    if len(s) > 0:
-        LF_WriteBuffer(hnd, s, len(s))
-    null = b'\x00'
-    LF_WriteBuffer(hnd, null, 1)
-
-def _read_string(hnd) -> bytes:
-    """
-    Read a UTF-8 string from a DataHandle.
-
-    Behavior mirrors Pascal's LF_ReadString: if no null terminator is
-    found, return the entire remaining buffer instead of empty bytes.
-    """
-    pos = LF_GetPos(hnd)
-    size = LF_GetSize(hnd)
-    if pos >= size:
-        return b''
-    ptr = LF_GetBuffer(hnd)
-    if not ptr:
-        return b''
-
-    cptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_byte))
-    end = pos
-    while end < size and cptr[end] != 0:
-        end += 1
-
-    if end < size:
-        data_len = end - pos
-        if data_len == 0:
-            LF_SetPos(hnd, end + 1)
-            return b''
-        raw = (ctypes.c_byte * data_len)()
-        LF_ReadBuffer(hnd, raw, data_len)
-        LF_SetPos(hnd, end + 1)
-        return bytes(raw)
-    else:
-        data_len = size - pos
-        if data_len == 0:
-            return b''
-        raw = (ctypes.c_byte * data_len)()
-        LF_ReadBuffer(hnd, raw, data_len)
-        LF_SetPos(hnd, size)
-        return bytes(raw)
-
-# ============================================================================
 # Log functions
 # ============================================================================
 def _send_to_backend(msg: str):
@@ -367,6 +390,89 @@ def log_warning(msg):
     _send_to_backend(msg)
 
 # ============================================================================
+# Tool result normalization (F1 fix)
+# ============================================================================
+#
+# This is the ONLY place in this file that uses json.loads directly.
+# It is not LF DataHandle I/O: it is a local convenience that unwraps
+# a byte payload the backend already returned as JSON text.
+
+def _normalize_tool_result_for_mcp(result: Any) -> Any:
+    """
+    Coerce a backend tool result into a FastMCP-serializable value.
+
+    Background
+    ----------
+    FastMCP serializes the return value of every @mcp.tool() function
+    to JSON before sending it to the MCP client. A raw `bytes` value
+    is not JSON-native: passing one back would trigger a serialization
+    error inside FastMCP and abort the entire MCP session, taking down
+    every subsequent tool call in that session.
+
+    This helper guarantees that the value returned from call_tool is
+    always JSON-serializable. The mapping is:
+
+      * A non-bytes value (dict, list, str, int, float, bool, None)
+        is returned unchanged, so all existing behaviours are
+        preserved byte-for-byte.
+
+      * A bytes value that decodes as UTF-8 and parses as JSON is
+        returned as the parsed Python object. This is the common
+        case for a backend that returned a JSON document over a
+        non-JSON-aware transport.
+
+      * A bytes value that decodes as UTF-8 but is not JSON is
+        returned as the decoded string. The caller sees the same
+        text the backend produced.
+
+      * A bytes value that does not decode as UTF-8 is returned as
+        a structured object of the form:
+
+            {
+              "__bytes_b64__": "<base64 of the raw bytes>",
+              "__note__": "backend returned non-UTF-8 bytes; "
+                          "payload is base64 encoded"
+            }
+
+        Base64 is JSON-safe, so FastMCP can always serialize it.
+        Binary payloads are therefore preserved losslessly across
+        the MCP boundary.
+
+    Args:
+        result: The raw value returned by read_json_or_bytes. In
+            practice this is either a decoded Python object (dict,
+            list, str, number, bool, None) or the raw bytes when the
+            backend returned a non-JSON payload.
+
+    Returns:
+        A JSON-serializable value (see the mapping above).
+    """
+    if not isinstance(result, (bytes, bytearray)):
+        return result
+
+    raw = bytes(result)
+
+    # Step 1: try to decode as UTF-8.
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Not text. Preserve the bytes losslessly via base64.
+        return {
+            "__bytes_b64__": base64.b64encode(raw).decode("ascii"),
+            "__note__": (
+                "backend returned non-UTF-8 bytes; "
+                "payload is base64 encoded"
+            ),
+        }
+
+    # Step 2: valid UTF-8; try to parse as JSON for a richer value.
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        # Not JSON; return as plain text.
+        return text
+
+# ============================================================================
 # Tool invocation
 # ============================================================================
 def get_tools_from_middleware() -> List[Dict[str, Any]]:
@@ -376,6 +482,34 @@ def get_tools_from_middleware() -> List[Dict[str, Any]]:
     return middleware.get_tools()
 
 async def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+    """
+    Invoke a backend tool through the language middleware.
+
+    All LF DataHandle I/O goes through lingofuse.lf_io:
+      * lf_io.cstr()             supplies NUL-terminated UTF-8 bytes for
+                                 every c_char_p LF_* parameter.
+      * lf_io.write_json()       writes the request payload with
+                                 ensure_ascii=False and a trailing NUL.
+      * lf_io.read_json_or_bytes() reads the response, returning a
+                                 decoded object when the payload is
+                                 valid JSON and the raw bytes otherwise.
+
+    Both the request handle and the response handle are released in
+    finally blocks so that an exception during payload I/O cannot leak
+    a DataHandle.
+
+    Return value contract (F1 fix)
+    ------------------------------
+    The value returned by this function is the raw result of
+    read_json_or_bytes, passed through _normalize_tool_result_for_mcp
+    first. This guarantees that the value is always JSON-serializable:
+      * dict / list / scalar / None  -> unchanged;
+      * bytes that are UTF-8 JSON    -> parsed Python object;
+      * bytes that are UTF-8 text    -> decoded string;
+      * bytes that are not UTF-8     -> {"__bytes_b64__": "..."}.
+    FastMCP can therefore serialize every return value, and a raw
+    binary payload from the backend can never abort the MCP session.
+    """
     global middleware
     if middleware is None:
         raise RuntimeError("LanguageMiddleware not initialized")
@@ -400,34 +534,53 @@ async def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
         target_app = tool['target_app']
         target_api = tool['target_api']
 
-        payload = json.dumps(arguments, ensure_ascii=False).encode('utf-8')
-
-        req = LF_CreateData(target_api.encode('utf-8'))
+        # Create the request handle. cstr() supplies NUL-terminated
+        # UTF-8 bytes for the API name parameter.
+        req = LF_CreateData(cstr(target_api))
         if not req:
             raise RuntimeError("Failed to create request handle")
-        _write_string(req, payload)
 
-        resp = LF_Call(target_app.encode('utf-8'), req, middleware._timeout_ms)
-        LF_FreeData(req)
+        # Write the request payload. write_json() guarantees
+        # ensure_ascii=False (no \uXXXX escapes) and appends the NUL
+        # terminator required by the Pascal-side LF_ReadString.
+        try:
+            write_json(req, arguments)
+        except Exception:
+            LF_FreeData(req)
+            raise
+
+        # Invoke the remote API. The request handle is freed in the
+        # finally block so that a fault in LF_Call cannot leak it.
+        try:
+            resp = LF_Call(
+                cstr(target_app), req, middleware._timeout_ms
+            )
+        finally:
+            LF_FreeData(req)
 
         if not resp:
             raise LanguageCallError(
                 f"LF_Call returned null handle for tool '{tool_name}'"
             )
 
-        raw = _read_string(resp)
-        LF_FreeData(resp)
-
+        # Read the response. read_json_or_bytes() returns a decoded
+        # Python object when the payload is valid JSON, and the raw
+        # bytes otherwise. This matches the historical behaviour of
+        # this tool: a backend API may legitimately return plain text
+        # or binary, and the MCP server forwards it unchanged.
         try:
-            if raw:
-                result = json.loads(raw.decode('utf-8'))
-            else:
-                result = None
-        except Exception:
-            result = raw
+            result = read_json_or_bytes(resp)
+        finally:
+            LF_FreeData(resp)
 
-        log_debug(f"API call response: {tool_name} result={result}")
-        return result
+        # F1 fix: normalize the raw result before returning it to
+        # FastMCP. Without this step a bytes payload from the backend
+        # would raise inside FastMCP's JSON serializer and abort the
+        # MCP session.
+        normalized = _normalize_tool_result_for_mcp(result)
+
+        log_debug(f"API call response: {tool_name} result={normalized}")
+        return normalized
     except Exception as e:
         log_error(f"API call exception: {tool_name} error={e}")
         raise
@@ -467,7 +620,7 @@ def _json_type_to_python(json_type: str) -> str:
     FastMCP introspects the Python function signature to build the JSON
     Schema it advertises to MCP clients. If a parameter has no
     annotation, the schema ends up without a "type" (or as an empty
-    object), and some clients (e.g. LM Studio) send `{}` instead of a
+    object), and some clients (e.g., LM Studio) send `{}` instead of a
     proper value. Adding `name: int` (etc.) to the generated signature
     fixes this.
     """
@@ -484,6 +637,50 @@ def _json_type_to_python(json_type: str) -> str:
 # Dynamic tool registration
 # ============================================================================
 def register_dynamic_tools(mcp: FastMCP, mw) -> None:
+    """
+    Build and register one Python function per backend tool.
+
+    Generated source overview
+    -------------------------
+    For each tool reported by the middleware, this function emits
+    Python source of the following shape:
+
+        async def <py_tool_name>(<params>) -> Any:
+            \"\"\"<description>\"\"\"
+            args = {'<raw_param>': <py_param>, ...}
+            return await call_tool('<raw_tool_name>', args)
+
+    and exec()s it into a fresh namespace before registering the
+    resulting function with FastMCP.
+
+    Unicode / non-ASCII parameter names (M4 audit)
+    ----------------------------------------------
+    The backend tool schema comes from an external provider and can
+    contain parameter names with any Unicode content. The generated
+    source is therefore assembled carefully:
+
+      * Every string literal inside the source (the tool name and
+        each raw parameter name) is emitted via repr(). repr() of a
+        str always produces valid Python source for that string,
+        including non-ASCII characters and any escape sequences the
+        name might contain.
+
+      * The Python identifier that appears in the function signature
+        is chosen by _unique_py_identifier. If the raw name is not a
+        valid Python identifier or is a keyword, the fallback is an
+        ASCII identifier of the form arg_N / tool_N. The identifier
+        that appears in the source is therefore always ASCII and
+        never a keyword.
+
+      * The runtime arg dict is keyed on the raw parameter name
+        (repr'd), so the value seen by call_tool is exactly the name
+        the backend advertised. The MCP client's wire format is not
+        affected by the internal Python identifier.
+
+    This combination makes the generation safe for arbitrary Unicode
+    input; no additional escaping is required beyond what repr()
+    already provides.
+    """
     tools = mw.get_tools()
     log_info(f"Registering {len(tools)} tools")
     tool_names = [t.get('name', '') for t in tools]

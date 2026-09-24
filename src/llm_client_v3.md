@@ -19,14 +19,15 @@
 >
 > **可信度标记**：`[源码]` = 逐行核对过 `.pas`；`[协议]` = 从服务端契约推断；`[教训]` = 来自实际踩坑；`[未核实]` = 需回查源码。
 >
-> **文档版本**：v2.3（Structured Output 组合扩展版）
-> **最后更新**：2026-09-17
+> **文档版本**：v2.4（Structured Output 组合扩展版 · 目录对齐版）
+> **最后更新**：2026-09-24
 > **SDK 源码位置**：本仓库 `src\llm_client_v3.pas`（v3.10）
 > **GUI 演示**：本仓库 `src\llm_tool_v3.lpi`（v3.4）
 > **相关文档**：
 > - [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) — Pascal 开发者切入指南
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
-> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
+> - [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) — Pascal 核心层完整指南（含踩坑知识库）
+> - [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) — Structured Output 完整学习指南
 
 ---
 
@@ -99,6 +100,7 @@
 | **`GenerateWithAttachmentsAndSchema`**（v3.10） | `(AContent, APrompt: string; ATexts, AImages; ASchemaName, ASchemaJson: string; AStrict: boolean; var ASessionId; out AError)` | **更新 `FCurrentSessionId`** | **附件数组 + JSON Schema**（完全控制） |
 
 **`ASessionId` 优先级** [源码]：
+
 ```text
 如果 ASessionId <> '' → 用它（并写回 FCurrentSessionId）
 否则如果 FCurrentSessionId <> '' → 用它（续接）
@@ -167,6 +169,7 @@
 ### 1.6 `Connect` / `Disconnect` 的副作用清单
 
 **`Connect` 成功时**：
+
 | 字段 | 新值 |
 |------|------|
 | `FPrepared` | `True` |
@@ -232,6 +235,7 @@ TLLMImageAttachmentArray = array of TLLMImageAttachment;
 **为什么用 `TZ_JsonString`** [教训]：动态数组 + record + `string` 字段的 finalize 在某些编译器配置下不可靠。`TZ_JsonString`（`TPascalString` / `TUPascalString`）的内部缓冲是编译器明确会 finalize 的托管类型。
 
 **赋值语法**：
+
 ```pascal
 att.Name.Text := 'file.txt';        // 推荐（隐式走编译器转换）
 att.Name.Bytes := TEncoding.UTF8.GetBytes('file.txt');  // 等价
@@ -519,6 +523,8 @@ end;
 | `LF_BindApp returned 0 - no free client available` | `Connect` | 所有客户端已被占用，或主线程未启动 | 开 `Overlap_Connection=True`，或换物理地址 |
 | `Unexpected exception in Connect: ...` | `Connect` | `try...except` 捕获的意外异常 | 看后缀的具体异常消息 |
 
+> **相关原理**：`LF_PrepareClientEx` 的地址去重行为、`LF_BindApp` 的绑定规则，见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-NET-001` / `LF-APP-005` / `LF-APP-006`。
+
 ### 4.2 通用调用相关
 
 | 错误消息原文 | 抛出位置 | 根因 | 修复 |
@@ -535,6 +541,8 @@ end;
 | `JSON parse exception: ...` | `SafeParseJson` | `Parse` 抛异常 | 服务端返回畸形数据 |
 | `X response missing "code"` | `CheckResponseCode` | 响应无 `code` 字段 | 服务端协议不匹配 |
 | `X failed (code N)` | `CheckResponseCode` | `code <> 0` 但无 `error` 字段 | 服务端未提供详情 |
+
+> **相关原理**：`LF_Call` 超时返回 size=0 的空句柄（非 nil），见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-CALL-001`。
 
 ### 4.3 会话相关
 
@@ -788,6 +796,7 @@ end;
 ### 6.2 释放模式（模板）
 
 **附件**：
+
 ```pascal
 var
   Texts: TLLMTextAttachmentArray;
@@ -803,6 +812,7 @@ end;
 ```
 
 **`GetAPICapabilities` 的返回**：
+
 ```pascal
 var
   CapJson: TZ_JsonString;   // ⚠️ 不是 string
@@ -817,6 +827,7 @@ end;
 ```
 
 **`GenerateWithImageFileAndSchema` 的调用**（**无需手动清理**）：
+
 ```pascal
 // ✅ 只需传文件路径；方法内部负责读文件、编码、发请求、清理
 Client.GenerateWithImageFileAndSchema('检测', '', 'a.png',
@@ -839,12 +850,13 @@ Client.GenerateWithImageFileAndSchema('检测', '', 'a.png',
 
 ### 7.2 通知线程约束（**核心规则**）
 
-1. **回调中不能调用任何 Call API** [源码]：会死锁（回调线程持有 LingoFuse 内部锁）。
-2. **回调中不能直接操作 UI** [教训]：VCL/LCL 非线程安全。
+1. **回调中不能调用任何 Call API** [源码]：会死锁（回调线程持有 LingoFuse 内部锁）。相关原理见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-CB-002`。
+2. **回调中不能直接操作 UI** [教训]：VCL/LCL 非线程安全。相关原理见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-CB-004` / `LF-NET-005`。
 3. **回调中维护跨消息状态要加锁** [未核实]：不确定通知线程是单一还是池化。
 4. **回调中不要 `DoStatus`** [源码]：`llm_client_v3` 从不这样做，避免 `Z.Status` 队列重入。
 
 **正确 marshalling 模板**：
+
 ```pascal
 procedure TForm1.OnLLMChunk(const SessionId, Text: string);
 begin
@@ -866,6 +878,7 @@ end;
 **症状**：UI 偶发崩溃，多核机器概率更高。
 
 **验证**：
+
 ```pascal
 procedure TForm1.OnLLMChunk(const SessionId, Text: string);
 begin
@@ -882,6 +895,7 @@ OutputDebugString(PChar('main tid=' + IntToStr(GetCurrentThreadId)));
 **症状**：整个进程挂住，Ctrl+C 无响应。
 
 **修复**：
+
 ```pascal
 TThread.CreateAnonymousThread(
   procedure
@@ -901,6 +915,7 @@ TThread.CreateAnonymousThread(
 ### 8.4 `LF_WriteStringBytes` 追加 NUL
 
 **验证**：
+
 ```pascal
 var
   H: TDataHnd;
@@ -915,11 +930,12 @@ begin
 end;
 ```
 
-**含义**：跨语言协议的关键。
+**含义**：跨语言协议的关键。相关原理见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-DATA-005` / `LF-XLANG-001`。
 
 ### 8.5 `LF_ReadStringBytes` 的 fault-tolerant
 
 **验证**：
+
 ```pascal
 var
   Data: TBytes;
@@ -929,11 +945,12 @@ begin
 end;
 ```
 
-**含义**：HTTP 桥接（`bridge.py`）发来的 JSON 通常无 NUL，能正常读。
+**含义**：HTTP 桥接（`bridge.py`）发来的 JSON 通常无 NUL，能正常读。相关原理见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-DATA-004`。
 
 ### 8.6 `umlBase64EncodeBytes` 消费源缓冲
 
 **验证**：
+
 ```pascal
 var
   Src, Dst: TBytes;
@@ -951,6 +968,7 @@ end;
 ### 8.7 `FCurrentSessionId` 的隐式续接
 
 **验证**：
+
 ```pascal
 var
   S, E: string;
@@ -969,6 +987,7 @@ end;
 ### 8.8 `Parae` 是 `TBytes` 的原生入口
 
 **反例**：
+
 ```pascal
 // ❌ 多余中转
 var
@@ -987,6 +1006,7 @@ AJson.Parae(ARawBytes);
 **症状**：`OnChunk` 里抛异常，UI 无任何提示。
 
 **含义**：异常写入 `FLastException`，需要**主动轮询**才能发现：
+
 ```pascal
 if Client.LastException <> '' then
   ShowMessage('Last error: ' + Client.LastException);
@@ -1015,6 +1035,7 @@ if Client.LastException <> '' then
 3. 图片超限：单图 base64 超 8 MB，或累计超 16 MB。
 
 **修复**：
+
 ```pascal
 if not FClient.LLMSupported('attachments') then
 begin
@@ -1040,6 +1061,7 @@ end;
 4. `strict` 字段类型错误。
 
 **修复**：
+
 ```pascal
 if FClient.ServerKind = 'service' then
 begin
@@ -1064,7 +1086,7 @@ FClient.GenerateWithImageFileAndSchema(...);
 2. 确认模型支持（Qwen2.5 系列 / Qwen2.5-VL / Nemotron Omni）。
 3. prompt 与 schema 保持一致。
 
-### 8.14 v3.10 组合方法的坐标顺序与归一化约定（**v2.3 新增**）
+### 8.14 v3.10 组合方法的坐标顺序与归一化约定
 
 **症状**：JSON 合法，`label` 也对，但 `bbox` 位置和实际不符。
 
@@ -1104,9 +1126,11 @@ FClient.GenerateWithImageFileAndSchema(...);
 | `llm_proxy_tool.py` | `'proxy'` | 无状态转发 + **服务端工具执行** | ✅（需 `--vision`） | ✅ |
 
 **`proxy_tool` 与 `proxy` 的唯一区别**：
+
 ```pascal
 IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 ```
+
 **`server_kind` 都是 `'proxy'`** [协议]——不要只凭 `ServerKind` 判断。
 
 ### 9.2 能力矩阵字段
@@ -1174,7 +1198,7 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 | 新增 `GenerateWithJsonSchema` | 纯新增，无迁移动作 |
 | 模块版本字符串 `'Dynamic LLM Client (v3.8)'` → `(v3.9)` | 仅 App 描述文本变化 |
 
-### 10.4 v3.9 → v3.10：新增组合方法（非破坏性，**v2.3 新增**）
+### 10.4 v3.9 → v3.10：新增组合方法（非破坏性）
 
 | 变更 | 迁移动作 |
 |------|---------|
@@ -1190,11 +1214,13 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 - `BuildSchemaResponseFormatJson`
 - `SendGenerateCombined`
 
-### 10.5 v2.1 → v2.2 → v2.3：文档侧变更
+### 10.5 文档侧变更
 
 **v2.2**：新增 §16 Structured Output 完整指南（5 个检测器模板）。
 
-**v2.3**：更新 §16 增加两个组合方法（v3.10）；§1.3 / §4.5 / §4.6 / §5.4 / §5.6 / §8.14 / §10.4 / §11.3 / §11.7 / §12.16 / §14 / §16.2 / §16.4 / §16.7 / §16.8 同步更新；GUI 流程更新为 v3.4。
+**v2.3**：更新 §16 增加两个组合方法（v3.10）；多处同步更新；GUI 流程更新为 v3.4。
+
+**v2.4**：移除对已删除文档的引用（`LingoFuse_LLM_Pitfalls_For_AI.md`）；§4 / §7 / §8 中的 Pitfalls 引用改为指向 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中等价条目；新增 [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) 引用。
 
 ---
 
@@ -1216,6 +1242,8 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 9. `LF_BindApp`
 10. `FConnected := True`
 11. 能力探测
+
+> **相关原理**：`LF_Generate_AppName` 必须在 `LF_PrepareDone` 之后，见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中 `LF-APP-003`。
 
 ### 11.2 修改 `FTimeout`
 
@@ -1257,7 +1285,7 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 - **成功**：返回 `True`，`AError` 为空
 - **失败**：返回 `False`，`AError` 是 `error` 字段或 `'<APIName> failed (code N)'`
 
-### 11.7 修改 `response_format` 结构（**v2.3 重点**）
+### 11.7 修改 `response_format` 结构
 
 **受影响的点**：
 - **`BuildSchemaResponseFormatJson`**：唯一组装 envelope 的地方
@@ -1334,18 +1362,18 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 → §8.12 / §8.13
 
-### 12.16 **"我要图片 + 检测器一步到位"**（**v2.3 新增**）
+### 12.16 **"我要图片 + 检测器一步到位"**
 
 → **§3.5** + **§16.3 模板 2** + **§16.7**
 → 用 **`GenerateWithImageFileAndSchema`**
 → 无需手动组合附件和 schema
 
-### 12.17 **"我要多附件 + schema"**（**v2.3 新增**）
+### 12.17 **"我要多附件 + schema"**
 
 → **§5.4** + **§16.7**
 → 用 **`GenerateWithAttachmentsAndSchema`**
 
-### 12.18 **"GUI 怎么用"**（**v2.3 新增**）
+### 12.18 **"GUI 怎么用"**
 
 → **§16.9**
 
@@ -1359,7 +1387,7 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 | # | 不确定点 | 状态 | 说明 |
 |---|---------|:----:|------|
-| 1 | `LF_CallEx` 失败时返回 nil 还是空句柄 | ✅ | **返回 size=0 的空句柄** |
+| 1 | `LF_CallEx` 失败时返回 nil 还是空句柄 | ✅ | **返回 size=0 的空句柄**（见 `LF-CALL-001`） |
 | 2 | 通知回调是单线程还是池化 | ⏳ | 建议打线程 ID 观察 |
 | 3 | `ClearTextAttachments` 是否真的必要 | ⏳ | 建议保留 |
 | 4 | `umlBase64EncodeBytes` 消费源是否所有版本一致 | ⏳ | 读源码确认 |
@@ -1416,11 +1444,20 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 | [`../Build_Guide.md`](../Build_Guide.md) | 编译指南（含 `llm_client_v3` / `llm_tool_v3`） |
 | [`../readme.md`](../readme.md) | 项目总览与四大核心应用组件 |
 | [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) | 生态总览（四大应用组件 + 两条路径） |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全（含 P8 多模态专项） |
 | [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | 纯转发代理命令行手册（第 5.5 节多模态） |
 | [`LingoFuse_LLM_Proxy_Tool_CLI_Guide.md`](LingoFuse_LLM_Proxy_Tool_CLI_Guide.md) | LTB 命令行手册（第 4.5 节多模态） |
 | [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | 本地推理服务手册 |
-| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南 |
+| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含踩坑知识库） |
+| [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) | Structured Output 完整学习指南 |
+| [`QUICK_START_LLM_STACK.md`](QUICK_START_LLM_STACK.md) | LLM 栈快速上手 |
+
+### 代码生成器
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 一份声明 → **几十种目标语言的 API 接口**。声明规范、使用手册、生成器源码与预编译包均以该仓库为准。
 
 **GUI 演示源码**：本仓库 `src\llm_tool_v3_frm.pas`（v3.4）—— 展示 SDK 全部关键用法（多会话、流式、附件、能力发现、结构化输出、一步到位检测器）。
 
@@ -1428,9 +1465,11 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 
 ## §16 Structured Output 完整指南
 
-> **本章是 v2.3 的核心章节。**
+> **本章是本文档的核心章节。**
 >
 > 目标：让 AI 和人类开发者**不用读源码**就能在 Pascal 项目里，通过 LingoFuse 生态拿到**结构化的 JSON 输出**——尤其是**检测器方框标注**。
+>
+> 📖 **想系统学习 Structured Output 的原理**（从起源、规范、JSON Schema 基础，到后端实现、最佳实践）→ 阅读 [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md)。
 >
 > 阅读顺序：
 > 1. **§16.1** 什么是 Structured Output
@@ -1450,12 +1489,14 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 **Structured Output（结构化输出）** 是一种让大模型**严格按照调用方提供的 JSON Schema 生成输出**的机制。
 
 **传统提示词方式**：
+
 ```
 用户：请用 JSON 格式返回检测结果，包含标签和方框。
 模型：好的，这是 JSON：{ ... }   ← 可能包含多余文本，或格式错误
 ```
 
 **Structured Output 方式**：
+
 ```
 用户：（附带 schema）请检测。
 模型：{"detections":[{"label":"person","bbox":[0.1,0.2,0.5,0.6]}]}   ← 严格符合 schema，无多余内容
@@ -1467,6 +1508,7 @@ IsToolBridge = LLMSupported('tools') and LLMSupported('tool_calls');
 - **后端（LM Studio 等）在生成时约束解码**——是"在 token 层面强制"。
 
 **支持链路**：
+
 ```
 客户端（llm_client_v3）
     ↓ options.response_format
@@ -1478,6 +1520,7 @@ OpenAI 兼容后端（LM Studio / Ollama / vLLM）
 ```
 
 **不支持链路**：
+
 ```
 llm_client_v3 → llm_service（本地 llama.cpp）
     ❌ 不转发 response_format
@@ -1621,6 +1664,7 @@ function TLLMClient.GenerateWithAttachmentsAndSchema(
 **使用场景**：学习、原型、内部工具。
 
 **Pascal 调用**（v3.10 一步到位）：
+
 ```pascal
 var
   SchemaBody: string;
@@ -1649,6 +1693,7 @@ end;
 ```
 
 **预期输出**：
+
 ```json
 {
   "detections": [
@@ -1705,6 +1750,7 @@ end;
 **使用场景**：需要按置信度过滤、排序、可视化的生产环境。
 
 **Pascal 调用**：
+
 ```pascal
 SchemaBody :=
   '{"type":"object","properties":{' +
@@ -1722,6 +1768,7 @@ LLM.GenerateWithImageFileAndSchema('检测图片中的目标', '', 'test.png',
 ```
 
 **预期输出**：
+
 ```json
 {
   "detections": [
@@ -1786,6 +1833,7 @@ LLM.GenerateWithImageFileAndSchema('检测图片中的目标', '', 'test.png',
 - 或者：**只用 `label`（字符串）**，由 Pascal 侧做"字符串 → ID"的映射（更稳健）。
 
 **Pascal 调用**（用 `GenerateWithAttachmentsAndSchema` 附加类别映射文本）：
+
 ```pascal
 var
   Texts: TLLMTextAttachmentArray;
@@ -1995,6 +2043,7 @@ end;
 - **`OnFinish` 时才是完整 JSON**。
 
 **Pascal 侧接收模板**：
+
 ```pascal
 type
   TForm1 = class(TForm)
@@ -2201,6 +2250,7 @@ end;
 **根因**：`llm_service` 本地推理路径**不转发** `options.response_format`。
 
 **修复**：
+
 ```pascal
 if LLM.ServerKind = 'service' then
 begin
@@ -2217,6 +2267,7 @@ end;
 **症状**：后端返回 400，错误信息含 `unrecognized type json_schema`。
 
 **错误结构**：
+
 ```json
 {
   "type": "json_schema",
@@ -2230,6 +2281,7 @@ end;
 ```
 
 **正确结构**：
+
 ```json
 {
   "type": "json_schema",
@@ -2322,6 +2374,7 @@ end;
 #### 调试技巧：打开代理层 DEBUG 日志
 
 **启动 llm_proxy 时**：
+
 ```powershell
 .\llm_proxy.exe `
   --backend-url http://127.0.0.1:1234/v1 `
@@ -2331,6 +2384,7 @@ end;
 ```
 
 **观察输出**：
+
 ```
 [DEBUG] Backend request: url=... model=... msgs=N tools=no response_format=yes
 ```
@@ -2633,7 +2687,7 @@ end.
 
 ---
 
-**文档版本**：v2.3（Structured Output 组合扩展版——新增 §16.2 四个 API、§16.3 检测器模板 Pascal 调用示例改为 v3.10 一步到位、§16.7 完整可运行示例改用 `GenerateWithImageFileAndSchema`、§16.9 GUI 使用流程、§1.3 / §4.5 / §4.6 / §5.4 / §5.6 / §8.14 / §10.4 / §11.3 / §11.7 / §12.16-18 / §14 同步更新）
+**文档版本**：v2.4（Structured Output 组合扩展版 · 目录对齐版——移除对已删除文档 `LingoFuse_LLM_Pitfalls_For_AI.md` 的引用；§4 / §7 / §8 / §11 中的 Pitfalls 引用改为指向 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) 中等价条目；新增 [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) 与 [`QUICK_START_LLM_STACK.md`](QUICK_START_LLM_STACK.md) 引用；MCP-API 生成器统一指向 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)；对齐实际仓库文档清单）
 
 **维护方式**：发现新的错误消息、新坑、新模板，追加到对应章节
 **核心承诺**：AI 读完本文档能独立完成 95% 的 `llm_client_v3` 任务（含检测器一步到位），剩下 5% 见 §13 诚实清单

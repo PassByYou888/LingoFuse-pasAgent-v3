@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LingoFuse LLM Test Client - interactive multi-session REPL (v3.7).
+LingoFuse LLM Test Client - interactive multi-session REPL (v3.10).
 
 Matches the v3.0 server protocol:
 
@@ -24,6 +24,68 @@ Matches the v3.0 server protocol:
       get_api_capabilities()                        -> {code, server_kind,
                                                         capabilities: {...}}
       health()                                      -> {code, status, ...}
+
+CHANGELOG (v3.10)
+    * JSON handling unification (T1 / T2 / T3 / T4):
+      - T1: `remote_call` now guards the entire request phase
+        (DataHandle creation, write_json serialization, LF_Call) and
+        the entire response phase (DataHandle._from_raw, read_json)
+        with try/except blocks. Any failure - including a circular
+        reference that would make write_json raise ValueError, or an
+        invalid UTF-8 payload that would make read_json raise
+        RuntimeError - is caught and converted into a `None` return
+        value. The caller's `if resp is None` check then handles the
+        failure exactly as it already handled a null response handle.
+        Previously a serialization error or a malformed response
+        could propagate out of remote_call and abort the REPL.
+      - T2: `cmd_new` and `run_once` now use `resp.get("session_id")`
+        with an explicit empty check instead of `resp["session_id"]`.
+        A server that returns code 0 but omits session_id (which has
+        been observed on a small number of legacy responses) no
+        longer raises KeyError.
+      - T3: `cmd_sessions` now uses `s.get(...)` with safe defaults
+        for every field it prints. A malformed session summary from
+        the server (missing session_id, status, or message_count)
+        no longer raises KeyError; missing fields are printed as
+        placeholders.
+      - T4: `cmd_health` now converts every capability name to `str`
+        before joining. A server that returns a non-string key in
+        the api_capabilities map (rare, but not impossible) no
+        longer raises TypeError on the join.
+    * Audit confirmation (no code change needed):
+      - `on_llm_stream` already wraps its entire body in a try/except
+        and sets STATE.finish_event on any exception, so a malformed
+        notify payload cannot leave the REPL waiting forever.
+      - `fetch_capabilities` already normalizes every value with
+        `int(v)` inside try/except and safely handles a non-dict
+        capabilities map.
+      - The attachment helpers (`_read_text_file`, `_read_image_file`,
+        `_build_attachments`) do not perform JSON serialization or
+        parsing; they only read files and assemble plain dicts.
+
+CHANGELOG (v3.9)
+    * Import path follow-up: the lf_io module was relocated from the
+      llm_common package into the lingofuse package. The docstring and
+      inline comments in this file now reference lingofuse.lf_io
+      instead of the old llm_common.lf_io path. There is no behavioural
+      change: the runtime imports were already using lingofuse.lf_io
+      at the end of the v3.8 cycle.
+
+CHANGELOG (v3.8)
+    * All JSON and string I/O on LingoFuse DataHandles is delegated to
+      lingofuse.lf_io. The client no longer calls DataHandle.write_json
+      / DataHandle.read_json, and no longer builds c_char_p strings by
+      hand. Every request payload, every response payload, and every
+      streaming notify payload goes through lf_io.write_json /
+      lf_io.read_json, and every LF_Call / LF_PrepareClient string
+      parameter goes through lf_io.cstr. This guarantees:
+        - ensure_ascii=False on every payload (no \\uXXXX escapes)
+        - NUL termination on every string written to a DataHandle
+        - NUL-tolerant reads (accepts raw JSON from HTTP bridges)
+        - explicit NUL on every c_char_p LF_* parameter
+      The DataHandle position is rewound to 0 before every read, so
+      the behaviour matches the previous DataHandle.read_json() which
+      did the same internally.
 
 SERVER CAPABILITY DISCOVERY
 ---------------------------
@@ -253,7 +315,23 @@ from lingofuse.core import DataHandle
 from lingofuse._lf_native import (
     LF_ResetPrepare, LF_PrepareClient, LF_PrepareDone,
     LF_Call, LF_ExitMainThread, LF_Shutdown,
-    LF_BindApp,
+    LF_BindApp, LF_SetPos, LF_FreeData,
+)
+
+# ----------------------------------------------------------------------
+# Unified LingoFuse DataHandle I/O
+# ----------------------------------------------------------------------
+#
+# All JSON and string reads/writes on a LingoFuse DataHandle go through
+# lingofuse.lf_io. This module guarantees:
+#   * ensure_ascii=False  -> no \uXXXX escapes on the wire
+#   * NUL termination     -> matches Pascal's LF_ReadString
+#   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
+#   * explicit NUL on c_char_p LF_* parameters
+from lingofuse.lf_io import (
+    cstr,
+    read_json,
+    write_json,
 )
 
 
@@ -377,7 +455,7 @@ def parse_args() -> argparse.Namespace:
         prog=get_invocation_name(),
         description=(
             "LingoFuse LLM Test Client - interactive multi-session REPL "
-            "(v3.7)"
+            "(v3.10)"
         ),
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -680,32 +758,85 @@ def remote_call(server_app: str, api_name: str,
                 timeout_ms: int) -> Optional[Dict[str, Any]]:
     """
     Send a Call request and return the parsed JSON response.
-    Returns None on transport or parse error.
+    Returns None on any failure (serialization, transport, parse).
+
+    All DataHandle I/O goes through lingofuse.lf_io:
+      * write_json() serializes request_json with ensure_ascii=False
+        (no \\uXXXX escapes) and appends the NUL terminator required
+        by the Pascal-side LF_ReadString.
+      * cstr() supplies NUL-terminated UTF-8 bytes for the c_char_p
+        parameter of LF_Call.
+      * read_json() reads the response up to the first NUL, decodes it
+        as UTF-8, and parses it as JSON.
+
+    Failure isolation (T1)
+    ----------------------
+    Every step of the round trip is guarded:
+
+      * DataHandle creation, write_json serialization, and LF_Call are
+        wrapped together. A circular reference in request_json (which
+        would make write_json raise ValueError) or an unexpected
+        transport failure is caught and returned as None.
+      * DataHandle._from_raw is wrapped separately; if it raises, the
+        raw handle is freed defensively and None is returned.
+      * LF_SetPos and read_json are wrapped together. A malformed
+        response (invalid UTF-8 or unrepairable JSON) is caught and
+        returned as None.
+
+    The caller therefore has exactly one failure path to handle: the
+    function returned None. No JSON-related exception can propagate
+    out of this function and abort the REPL.
     """
     hnd = None
     res_hnd = None
+
+    # ---- Phase 1: request ----
     try:
-        hnd = DataHandle(api_name)
-        hnd.write_json(request_json)
-        res_hnd = LF_Call(server_app.encode("utf-8"), hnd.raw, timeout_ms)
+        try:
+            hnd = DataHandle(api_name)
+            write_json(hnd.raw, request_json)
+            res_hnd = LF_Call(cstr(server_app), hnd.raw, timeout_ms)
+        except Exception as e:
+            print(f"[Client] ERROR: request phase failed for "
+                  f"{api_name}: {e}", file=sys.stderr)
+            return None
     finally:
         if hnd is not None:
-            hnd.free()
+            try:
+                hnd.free()
+            except Exception:
+                pass
 
     if not res_hnd:
         print(f"[Client] ERROR: Call to {api_name} returned a null handle",
               file=sys.stderr)
         return None
 
-    resp = DataHandle._from_raw(res_hnd, owned=True)
+    # ---- Phase 2: wrap response handle ----
     try:
-        return resp.read_json()
+        resp = DataHandle._from_raw(res_hnd, owned=True)
+    except Exception as e:
+        print(f"[Client] ERROR: failed to wrap response handle for "
+              f"{api_name}: {e}", file=sys.stderr)
+        try:
+            LF_FreeData(res_hnd)
+        except Exception:
+            pass
+        return None
+
+    # ---- Phase 3: read + parse response ----
+    try:
+        LF_SetPos(resp.raw, 0)
+        return read_json(resp.raw)
     except Exception as e:
         print(f"[Client] ERROR: Failed to parse response "
               f"from {api_name}: {e}", file=sys.stderr)
         return None
     finally:
-        resp.free()
+        try:
+            resp.free()
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------
@@ -811,11 +942,26 @@ def on_llm_stream(trigger, inp: DataHandle) -> None:
     finish -> signal completion
     error  -> record and print to stderr
     closed -> record session closure
+
+    The payload is read through lingofuse.lf_io.read_json, which
+    tolerates both NUL-terminated input (Pascal producers) and raw
+    input (HTTP bridges). The handle position is rewound to 0 before
+    reading, matching the previous DataHandle.read_json() behaviour.
+
+    Failure isolation (audit, unchanged)
+    ------------------------------------
+    The entire body is already wrapped in a try/except that sets
+    STATE.finish_event on any exception. A malformed notify payload
+    (invalid UTF-8, unrepairable JSON, missing fields) therefore
+    cannot leave the REPL waiting forever: the event fires, the
+    waiting thread wakes up, and the user sees a callback exception
+    message on stderr.
     """
     try:
         if inp.get_size() == 0:
             return
-        data = inp.read_json()
+        LF_SetPos(inp.raw, 0)
+        data = read_json(inp.raw)
         if not isinstance(data, dict):
             return
 
@@ -875,7 +1021,16 @@ def cmd_new(state: ClientState, server_app: str, timeout_ms: int,
     if resp is None or resp.get("code") != 0:
         print(f"[Client] Failed to create session: {resp}", file=sys.stderr)
         return
-    state.current_session_id = resp["session_id"]
+
+    # T2: safe extraction. A server that returns code 0 but omits
+    # session_id is reported as a failure rather than raising KeyError.
+    new_sid = resp.get("session_id")
+    if not new_sid or not isinstance(new_sid, str):
+        print(f"[Client] Server did not return session_id: {resp}",
+              file=sys.stderr)
+        return
+
+    state.current_session_id = new_sid
     print(f"[Client] Created session {state.current_session_id} "
           f"(client_name={state.client_name})")
 
@@ -897,15 +1052,25 @@ def cmd_sessions(state: ClientState, server_app: str, timeout_ms: int) -> None:
         print(f"[Client] Failed to list sessions: {resp}", file=sys.stderr)
         return
     sessions = resp.get("sessions", [])
+    if not isinstance(sessions, list):
+        sessions = []
     if not sessions:
         print("[Client] No sessions on the server for this client.")
         return
     print(f"[Client] {len(sessions)} session(s):")
+    # T3: safe extraction for every field. A malformed session summary
+    # (missing or non-dict entry) is skipped rather than raising.
     for s in sessions:
-        marker = " *" if s["session_id"] == state.current_session_id else "  "
-        print(f"  {marker} {s['session_id']}  "
-              f"status={s['status']}  "
-              f"messages={s['message_count']}")
+        if not isinstance(s, dict):
+            print(f"    (malformed session entry: {type(s).__name__})")
+            continue
+        sid = s.get("session_id", "?")
+        status = s.get("status", "?")
+        count = s.get("message_count", "?")
+        marker = " *" if sid == state.current_session_id else "  "
+        print(f"  {marker} {sid}  "
+              f"status={status}  "
+              f"messages={count}")
 
 
 def cmd_close(state: ClientState, session_id: Optional[str],
@@ -984,11 +1149,16 @@ def cmd_health(state: ClientState, server_app: str, timeout_ms: int) -> None:
     print("[Client] Server health:")
     # The api_capabilities field is a nested dict; flatten it into a
     # single line so the output stays readable.
+    #
+    # T4: every capability name is coerced to str before the join.
+    # A server that returns a non-string key in the capability map
+    # (rare, but not impossible) would otherwise raise TypeError.
     for k, v in resp.items():
         if k == "api_capabilities" and isinstance(v, dict):
-            supported = [n for n, flag in v.items() if flag == 1]
-            unsupported = [n for n, flag in v.items() if flag == 0]
-            print(f"    api_capabilities (supported)  : {', '.join(supported)}")
+            supported = [str(n) for n, flag in v.items() if flag == 1]
+            unsupported = [str(n) for n, flag in v.items() if flag == 0]
+            print(f"    api_capabilities (supported)  : "
+                  f"{', '.join(supported)}")
             print(f"    api_capabilities (unsupported): "
                   f"{', '.join(unsupported) or '(none)'}")
         else:
@@ -1117,8 +1287,8 @@ def send_turn(state: ClientState, text: str,
     task_id = resp.get("task_id")
     mode = resp.get("mode")
     if mode != "continue":
-        state.current_session_id = resp.get("session_id",
-                                            state.current_session_id)
+        state.current_session_id = resp.get(
+            "session_id", state.current_session_id)
     print(f"[Client] Task {task_id} queued (mode={mode}), streaming...")
     print("-" * 60)
 
@@ -1157,7 +1327,14 @@ def run_once(args: argparse.Namespace) -> int:
             print(f"[Client] Failed to create session: {resp}",
                   file=sys.stderr)
             return 1
-        session_id = resp["session_id"]
+
+        # T2: safe extraction. See cmd_new for the same pattern.
+        new_sid = resp.get("session_id")
+        if not new_sid or not isinstance(new_sid, str):
+            print(f"[Client] Server did not return session_id: {resp}",
+                  file=sys.stderr)
+            return 1
+        session_id = new_sid
         print(f"[Client] Created session {session_id}")
 
     STATE.current_session_id = session_id
@@ -1214,7 +1391,7 @@ def main() -> int:
     LF_ResetPrepare()
     set_option("Wait_Connection_ReadyOk", "True")
 
-    ret = LF_PrepareClient(args.endpoint.encode("utf-8"), None)
+    ret = LF_PrepareClient(cstr(args.endpoint), None)
     if ret == -1:
         print(f"[Client] ERROR: LF_PrepareClient failed for "
               f"'{args.endpoint}'", file=sys.stderr)

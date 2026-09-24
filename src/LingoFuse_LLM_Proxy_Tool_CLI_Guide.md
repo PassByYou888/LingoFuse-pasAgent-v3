@@ -1,15 +1,14 @@
 # LingoFuse LLM Tool Bridge (LTB) 命令行使用手册
 
 > **适用程序**：`llm_proxy_tool.exe`（Windows）/ `llm_proxy_tool`（Linux）
-> **文档版本**：v3.1（v3 架构重写版 · 多模态参数修正版）
-> **最后更新**：2026-09-17
+> **文档版本**：v3.2（v3 架构重写版 · 目录对齐版）
+> **最后更新**：2026-09-24
 > **相关文档**（同目录）：
 > - [`LingoFuse_LLM_Ecosystem_User_Guide.md`](LingoFuse_LLM_Ecosystem_User_Guide.md) — 生态总览
 > - [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) — 纯转发代理手册
 > - [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) — 本地推理服务手册
 > - [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) — 后端兼容清单
-> - [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) — 踩坑大全
-> - [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) — 版本演进
+> - [`llm_client_v3.md`](llm_client_v3.md) — Pascal 客户端 SDK 文档
 
 ---
 
@@ -1276,7 +1275,7 @@ end;
 
 **原因**：LingoFuse 的 `LF_PrepareDone()` 在同一进程内**只有第一次调用返回 1**。`Server.start()` 先执行会启动主线程，导致 `language_middleware._connect()` 的 `LF_PrepareDone()` 永久失败。
 
-**解决**：LTB 源码 `LLMProxyToolService.start()` 已按正确顺序（**先 `_ensure_tools_ready()`，后 `self.server.start()`**）实现。**不要改动此顺序**。详见 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P7-3。
+**解决**：LTB 源码 `LLMProxyToolService.start()` 已按正确顺序（**先 `_ensure_tools_ready()`，后 `self.server.start()`**）实现。**不要改动此顺序**。相关原理请查阅 `src/LingoFuse_Pascal_Complete_Guide.md` 中 `LF-NET-003`。
 
 ### Q3：LTB 与 mcp_api_tool 同时启动时冲突
 
@@ -1296,7 +1295,7 @@ end;
 
 **原因**：SSE 分片中的 `tool_calls` 未按 `index` 累加 `arguments` 字符串。
 
-**解决**：LTB 的 `OpenAIStreamClient.stream_chat` 已按 `index` 累加。**若你修改过该方法，请恢复按 `index` 聚合的逻辑**。详见 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P7-4。
+**解决**：LTB 的 `OpenAIStreamClient.stream_chat` 已按 `index` 累加。**若你修改过该方法，请恢复按 `index` 聚合的逻辑**。相关原理请查阅 `src/LingoFuse_Pascal_Complete_Guide.md` 中 `LF-DATA-004` / `LF-XLANG-001`。
 
 ### Q5：LTB 陷入无限循环，客户端收不到 `finish`
 
@@ -1333,7 +1332,7 @@ end;
 
 **原因**：LTB 不支持 `set_system_message`（与 `llm_proxy.exe` 一致）。
 
-**解决**：使用"新建会话"路径，把 system message 通过 `create_session` 的 `system_message` 字段传入。详见 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P6-3。
+**解决**：使用"新建会话"路径，把 system message 通过 `create_session` 的 `system_message` 字段传入。
 
 ### Q7：启动时提示 `Queue "llm_service0" is already occupied`
 
@@ -1366,8 +1365,6 @@ end;
 1. 检查后端是否强制 gzip 压缩（LTB 已设置 `Accept-Encoding: identity`）。
 2. 检查是否经过 nginx 反代，某些反代会缓冲 SSE。
 3. 用 `--log-level DEBUG` 观察 SSE 帧到达时间。
-
-详见 [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) 中 P0-4。
 
 ### Q9：工具结果被截断
 
@@ -1605,9 +1602,9 @@ LingoFuse 服务
 | [`LingoFuse_LLM_Proxy_CLI_Guide.md`](LingoFuse_LLM_Proxy_CLI_Guide.md) | `llm_proxy.exe` 命令行手册（纯文本代理） |
 | [`LingoFuse_LLM_Service_CLI_guide.md`](LingoFuse_LLM_Service_CLI_guide.md) | `llm_service.exe` 命令行手册（本地推理，纯文本） |
 | [`LingoFuse_LLM_Proxy_Compatibility_Guide.md`](LingoFuse_LLM_Proxy_Compatibility_Guide.md) | 支持的 250+ OpenAI 兼容后端清单（**LTB 同样适用**） |
-| [`LingoFuse_LLM_Pitfalls_For_AI.md`](LingoFuse_LLM_Pitfalls_For_AI.md) | 踩坑大全，症状-根因-正确做法（含 LTB 专项 P7 系列、多模态专项 P8 系列） |
-| [`LingoFuse_LLM_Service_Work_Summary.md`](LingoFuse_LLM_Service_Work_Summary.md) | LLM 工具链版本演进与架构决策（历史参考） |
 | [`llm_client_v3.md`](llm_client_v3.md) | Pascal 客户端 SDK 文档 |
+| [`llm_client_v3_Structured_Output_Learning_Guide.md`](llm_client_v3_Structured_Output_Learning_Guide.md) | Structured Output 完整学习指南 |
+| [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) | Pascal 核心层完整指南（含踩坑知识库） |
 
 ### 根目录相关文档
 
@@ -1615,11 +1612,19 @@ LingoFuse 服务
 |------|------|
 | [`../Pascal_Integration_Guide.md`](../Pascal_Integration_Guide.md) | Pascal 开发者切入指南 |
 | [`../Build_Guide.md`](../Build_Guide.md) | 编译指南 |
-| [`../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md`](../NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md) | 推荐模型下载与部署 |
+| [`../readme.md`](../readme.md) | 项目总览 |
+
+### 代码生成器
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 一份声明 → **几十种目标语言的 API 接口**。声明规范、使用手册、生成器源码与预编译包均以该仓库为准。
 
 ---
 
-**文档版本**：v3.1（v3 架构重写版 · 多模态参数修正版——补充 `--vision` 参数详解、修正启动横幅与源码字段对齐、`129+` → `250+` 统一、`vision=0` 语义说明）
+**文档版本**：v3.2（v3 架构重写版 · 目录对齐版——移除失效引用 `LingoFuse_LLM_Pitfalls_For_AI.md` / `LingoFuse_LLM_Service_Work_Summary.md` / `code_generate_mcp.md`；正文中的 P7-3 / P7-4 引用改为指向 `LingoFuse_Pascal_Complete_Guide.md` 的等价条目；MCP-API 生成器统一指向 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)；对齐实际仓库文档清单）
 
 **维护者**：LingoFuse-pasAgent 团队
 **反馈**：问题提 Issue，急事加 Q（600585）

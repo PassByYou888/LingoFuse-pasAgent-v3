@@ -53,6 +53,31 @@ Design principles
    session lifecycle, and errors. Every per-round and per-tool detail
    is logged at DEBUG level.
 
+JSON handling (unified)
+-----------------------
+All JSON payloads produced by this module are serialized through
+lingofuse.lf_io.dumps_json (ensure_ascii=False, default=str). No raw
+json.dumps() call remains in this file. This guarantees that no
+\\uXXXX escape ever appears on a LingoFuse wire or on an HTTP request
+body.
+
+Tool-call arguments and tool results are also part of the LF JSON
+policy:
+
+  * Tool arguments arrive from the backend as a JSON text string and
+    are parsed with a unified-repair fallback: fast-path json.loads,
+    then lingofuse.json_repair_preprocess.repair_json_text, then a
+    safe empty-dict fallback. A malformed arguments string can never
+    abort the round-trip.
+
+  * Tool results are serialized with dumps_json. A defensive
+    try/except around the serializer downgrades circular-reference
+    objects to a repr string, so a rogue tool result cannot abort
+    the generation.
+
+Both policies are documented in the module docstring of
+lingofuse.lf_io (see the JSON serialization policy section).
+
 Attachment handling
 -------------------
 Text attachments are merged into the text part of the user message,
@@ -97,7 +122,13 @@ from typing import Any, Dict, List, Optional
 
 from lingofuse import Server, set_option, check_app
 from lingofuse.core import DataHandle
-from lingofuse._lf_native import LF_Sequenced_Notify, LF_WriteBuffer
+from lingofuse._lf_native import LF_Sequenced_Notify
+from lingofuse.lf_io import (
+    cstr,
+    dumps_json,
+    write_json,
+)
+from lingofuse.json_repair_preprocess import repair_json_text
 
 from llm_common.attachments import (
     Attachment,
@@ -114,7 +145,6 @@ from llm_common.capabilities import (
     split_supported,
 )
 from llm_common.headers import (
-    jdump,
     load_key_from_file,
     parse_extra_headers,
 )
@@ -208,6 +238,109 @@ MAX_CLIENT_NAME_LEN = 512
 # ----------------------------------------------------------------------
 
 logger = logging.getLogger("llm_proxy_tool")
+
+
+# ----------------------------------------------------------------------
+# Unified JSON parsing helpers (module level)
+# ----------------------------------------------------------------------
+#
+# These helpers wrap the unified JSON repair preprocessor so that any
+# malformed JSON text encountered on the tool-call path can be safely
+# recovered or, failing that, safely downgraded. They are the ONLY
+# places in this module that call json.loads on external input.
+
+def _parse_json_with_repair(
+    text: str,
+    *,
+    source: str,
+    fallback: Any,
+) -> Any:
+    """
+    Parse a JSON text with a unified-repair fallback.
+
+    Contract:
+      * Fast path: json.loads(text). If it succeeds, return the result.
+      * On JSONDecodeError: call repair_json_text(text, source=...,
+        report_failure=False). If the repaired text is different and
+        parses as JSON, return that result.
+      * On any failure, return `fallback` unchanged.
+
+    This function never raises. It is intended for external input
+    where a malformed payload must never abort the caller.
+
+    Args:
+        text:     The JSON text to parse. Must be a `str`.
+        source:   A short identifier used by the repair engine in its
+                  log messages, e.g. "llm_proxy_tool.tool_arguments".
+        fallback: The value returned when parsing and repair both
+                  fail. Typically an empty dict for tool arguments.
+    """
+    if not isinstance(text, str):
+        return fallback
+
+    if not text:
+        return fallback
+
+    # Fast path: valid JSON.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Repair path. The engine validates its own output, but we still
+    # guard with try/except so that a broken engine can never
+    # propagate up.
+    try:
+        repaired = repair_json_text(
+            text,
+            source=source,
+            report_failure=False,
+        )
+    except Exception:
+        return fallback
+
+    if repaired == text:
+        # Engine had nothing to fix; the payload is unrepairable.
+        return fallback
+
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _dumps_json_safe(value: Any, *, source: str) -> str:
+    """
+    Serialize `value` to JSON with a defensive fallback.
+
+    Contract:
+      * Fast path: dumps_json(value). On success, return the string.
+      * On ValueError (typically "Circular reference detected"): log
+        a warning and return a small JSON object of the form
+        {"__repr__": "<repr(value)>"} instead of raising.
+
+    This function never raises. It exists so that a rogue tool result
+    (for example a Pascal-provided object graph with a cycle) cannot
+    abort the entire multi-round tool loop.
+
+    Args:
+        value:  The Python object to serialize.
+        source: A short identifier used only in the warning message.
+    """
+    try:
+        return dumps_json(value)
+    except ValueError as exc:
+        logger.warning(
+            "JSON serialization failed at %s (%s); "
+            "downgrading to repr",
+            source, exc,
+        )
+        # repr() may itself fail on exotic objects; guard once more.
+        try:
+            fallback_repr = repr(value)
+        except Exception:
+            fallback_repr = "<unrepresentable>"
+        return dumps_json({"__repr__": fallback_repr})
 
 
 # ----------------------------------------------------------------------
@@ -620,8 +753,7 @@ class LLMProxyToolService:
         #
         # COMMON_SCALAR_SPECS is passed explicitly so that the
         # whitelist is visible at the call site and not hidden behind
-        # a default argument. If a future change tightens or loosens
-        # the scalar rules, this is where the reader will look.
+        # a default argument.
         #
         # Passthrough keys:
         #   - "tools":           list of OpenAI tool definitions.
@@ -950,6 +1082,23 @@ class LLMProxyToolService:
         (`_handle_generate`) BEFORE this method runs, inside
         `sess.lock`. This method must always clear them via
         `sess.end_run()` in its `finally` block.
+
+        JSON handling
+        -------------
+        The two JSON operations on the tool path (parsing the backend's
+        tool_call arguments string, and serializing the tool result for
+        the role=tool message) both go through the unified JSON
+        policy:
+
+          * Arguments are parsed with _parse_json_with_repair: fast-path
+            json.loads, then the unified repair engine, then a safe {}.
+            A malformed arguments string never aborts the round-trip.
+
+          * Results are serialized with _dumps_json_safe: dumps_json
+            with a defensive circular-reference fallback. A rogue tool
+            result never aborts the round-trip.
+
+        Both operations are documented in the module docstring.
         """
         user_text = content + ("\n\n" + prompt if prompt else "")
 
@@ -1162,42 +1311,47 @@ class LLMProxyToolService:
 
                     logger.debug("  -> %s(%s)", tool_name, args_str)
 
-                    # ---- Parse arguments ----
+                    # ---- Parse arguments (unified repair fallback) ----
+                    #
+                    # The arguments string is a JSON document produced
+                    # by the backend inside a tool_call. It travels
+                    # over SSE, not over a LingoFuse DataHandle, so it
+                    # is parsed with the unified repair helper. A
+                    # malformed arguments string downgrades to {} and
+                    # the round-trip continues.
+                    args = _parse_json_with_repair(
+                        args_str,
+                        source="llm_proxy_tool.tool_arguments",
+                        fallback={},
+                    )
+                    if not isinstance(args, dict):
+                        args = {}
+
+                    # ---- Execute via middleware ----
                     try:
-                        args = json.loads(args_str) if args_str else {}
-                        if not isinstance(args, dict):
-                            args = {}
-                    except json.JSONDecodeError as e:
-                        result_content = json.dumps(
-                            {"error": f"invalid tool arguments: {e}"},
-                            ensure_ascii=False,
+                        if self._mw is None:
+                            raise RuntimeError(
+                                "MCP middleware not initialized"
+                            )
+                        result = self._mw.call_tool(tool_name, args)
+                        if result is None:
+                            result_content = _dumps_json_safe(
+                                {"result": None},
+                                source="llm_proxy_tool.tool_result_none",
+                            )
+                        else:
+                            result_content = _dumps_json_safe(
+                                result,
+                                source="llm_proxy_tool.tool_result",
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            "  !! tool execution failed: %s", e,
                         )
-                        logger.debug("  !! bad args JSON: %s", e)
-                    else:
-                        # ---- Execute via middleware ----
-                        try:
-                            if self._mw is None:
-                                raise RuntimeError(
-                                    "MCP middleware not initialized"
-                                )
-                            result = self._mw.call_tool(tool_name, args)
-                            if result is None:
-                                result_content = json.dumps(
-                                    {"result": None},
-                                    ensure_ascii=False,
-                                )
-                            else:
-                                result_content = json.dumps(
-                                    result, ensure_ascii=False,
-                                    default=str,
-                                )
-                        except Exception as e:
-                            logger.debug(
-                                "  !! tool execution failed: %s", e,
-                            )
-                            result_content = json.dumps(
-                                {"error": str(e)}, ensure_ascii=False,
-                            )
+                        result_content = _dumps_json_safe(
+                            {"error": str(e)},
+                            source="llm_proxy_tool.tool_result_error",
+                        )
 
                     # ---- Truncate this single result ----
                     if len(result_content) > CONFIG.max_tool_result_chars:
@@ -1309,8 +1463,12 @@ class LLMProxyToolService:
         """
         Send one structured JSON event to the client via the notify API.
 
-        Payload is serialized with ensure_ascii=False so that
-        non-ASCII content (Chinese, emoji) is preserved verbatim.
+        All payload I/O goes through lingofuse.lf_io:
+          * write_json() serializes `payload` with ensure_ascii=False
+            (no \\uXXXX escapes) and appends the NUL terminator
+            required by the Pascal-side LF_ReadString.
+          * cstr() supplies NUL-terminated UTF-8 bytes for the
+            c_char_p parameter of LF_Sequenced_Notify.
 
         Failures (client offline, DataHandle issues) are logged at
         DEBUG level and swallowed. They must never crash the worker
@@ -1319,16 +1477,8 @@ class LLMProxyToolService:
         hnd = None
         try:
             hnd = DataHandle(CONFIG.notify_api)
-            data = jdump(payload) + b"\x00"
-            written = LF_WriteBuffer(hnd.raw, data, len(data))
-            if written != len(data):
-                logger.warning(
-                    "Partial write to DataHandle: %d/%d bytes",
-                    written, len(data),
-                )
-            LF_Sequenced_Notify(
-                sess.client_name.encode("utf-8"), hnd.raw,
-            )
+            write_json(hnd.raw, payload)
+            LF_Sequenced_Notify(cstr(sess.client_name), hnd.raw)
         except Exception as e:
             logger.debug(
                 "Notify to '%s' failed (%s): %s",
@@ -1583,7 +1733,7 @@ def parse_args():
     """
     Parse command-line arguments.
 
-    The usage line and the examples section of --help adapt to the
+    The usage line and the examples section of `--help` adapt to the
     current packaging via llm_common.runtime.
     """
     invocation = get_example_invocation()

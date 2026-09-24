@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-generate_agent_json.py - MCP Client Configuration Generator (v2.5)
+generate_agent_json.py - MCP Client Configuration Generator (v2.6)
 
 This module generates JSON configuration files and Markdown documentation
 for various MCP clients (LM Studio, Claude Desktop, Continue.dev, Jan,
@@ -37,6 +37,38 @@ the two modes consistent:
 
 Generated stdio configurations always include `--log-file` so that the
 server writes a log next to the generated configs.
+
+{!!!!!  NOT PART OF LF JSON EXCHANGE  !!!!!}
+The json.dump calls in this module write MCP CLIENT CONFIGURATION
+FILES to disk. They are NOT LingoFuse DataHandle payloads and are
+therefore intentionally NOT routed through lingofuse.lf_io:
+
+    * The output is a human-readable configuration document
+      (indent=2) that a user will open in an editor. Its consumers
+      are MCP clients (LM Studio, Claude, Continue.dev, Jan,
+      DeepSeek), not LingoFuse services.
+
+    * The output never travels over a DataHandle. It is written to a
+      filesystem path chosen by --output-dir.
+
+    * The output does not need a NUL terminator; a JSON file that
+      ended in a NUL byte would be rejected by every MCP client.
+
+    * ensure_ascii=False is already set on every call, so non-ASCII
+      content (Windows user names, Chinese paths) is preserved as
+      literal UTF-8. The `default=str` fallback from lf_io.dumps_json
+      is not needed here: every value in the generated dicts is a
+      plain str / int / list / dict.
+
+The LF-side JSON policy (used by every LLM service and by bridge.py)
+lives in lingofuse.lf_io.dumps_json. This file is deliberately not a
+consumer of that module.
+
+CHANGELOG (v2.6)
+    * Documentation only: added an explicit note that the json.dump
+      calls in this module are application-level configuration-file
+      generation, not LF DataHandle JSON exchange. No behavioural
+      change.
 
 CHANGELOG (v2.5)
     * Removed unused `Dict` and `Any` imports from `typing`.
@@ -135,6 +167,10 @@ def generate_configs(
                 auto-detect based on the file extension.
         proxy_path: Path to mcp_api_proxy (script or exe). If provided and valid,
                     `_stdio_proxy.json` files will be generated.
+
+    The json.dump calls in this function produce application-level
+    MCP client configuration files. They are not LF DataHandle
+    payloads; see the module docstring for the rationale.
     """
     if python_exe is None:
         python_exe = sys.executable
@@ -265,6 +301,7 @@ def generate_configs(
         }
         stdio_file = output_path / f"{agent_id}_stdio.json"
         with open(stdio_file, "w", encoding="utf-8") as f:
+            # Application-level config file; not an LF DataHandle payload.
             json.dump(stdio_config, f, indent=2, ensure_ascii=False)
         print(f"[Generator] Wrote: {stdio_file}")
 

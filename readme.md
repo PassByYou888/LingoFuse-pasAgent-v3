@@ -25,7 +25,7 @@ v3 与 v2 的根本区别在于 **多模态（Multimodal）架构**。
 - **`llm_service`** 需要同时驱动多个模型（文本模型 + 视觉模型），并把不同模态的输入路由到对应模型
 - **`llm_proxy` / `llm_proxy_tool`** 需要支持多模态请求的转发、多模态能力矩阵的声明
 - **`llm_client`** 需要支持多模态内容构建（文本 + 图片附件的组合）
-- **客户端**需要理解"同一服务端、不同模态能力"的语义
+- **客户端**需要理解“同一服务端、不同模态能力”的语义
 
 这些改动**跨越多个独立组件**，彼此耦合紧密。为了避免 v2 主仓库的稳定性被破坏，**v3 独立开仓**，让多模态机制可以自由演进，同时不影响 v2 用户的既有部署。
 
@@ -50,7 +50,7 @@ Pascal 生态中已有多个 AI 智能体方案，它们在定位和适用场景
 | 能力 | **pasAgent v3** | PasClaw | MCP server Delphi | MakerAI Suite | Tina4 Pascal MCP | Daofy |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **从声明自动生成工具** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **⭐ 双语言代码生成（Pascal + Python）** | ✅ **v3 新增** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **⭐ 无限语言 MCP-API 生成（一份声明 → 几十种目标语言）** | ✅ **v3 新增** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **服务端代管工具执行** | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | **客户端零改动** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **跨语言通信层** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -79,10 +79,10 @@ flowchart TB
     V3["🎯 pasAgent v3<br/>两大独特优势"]
 
     V3 --> A1["🌐 多模态协作<br/>文字问答 + 图片问答"]
-    V3 --> A2["⭐ 双语言代码生成<br/>Pascal + Python"]
+    V3 --> A2["⭐ 无限语言 MCP-API 生成<br/>一份声明 → 几十种目标语言"]
 
     A1 --> D1["同一服务端<br/>同一会话<br/>多种模态"]
-    A2 --> D2["一份声明<br/>两种工具提供者<br/>零样板代码"]
+    A2 --> D2["零样板代码<br/>零 IDL<br/>覆盖整个语言生态"]
 
     style V3 fill:#0D2F52,stroke:#000000,stroke-width:5px,color:#FFFFFF
     style A1 fill:#1E8449,stroke:#0E4D2A,stroke-width:4px,color:#FFFFFF
@@ -113,37 +113,56 @@ flowchart TB
 }
 ```
 
-#### 优势 2：⭐ 双语言代码生成 —— Pascal + Python
+#### 优势 2：⭐ 无限语言 MCP-API 生成 —— 一份声明，几十种目标语言
 
 **其他方案**：需要手写回调、JSON 读写、工具注册，或只支持单一语言。
 
 **pasAgent v3**：
-- **一份声明，两种输出**：Pascal 声明 → Pascal 工具提供者 + Python 工具提供者
+- **一份声明，几十种输出**：Pascal / C 声明 → **任意目标语言**的 MCP-API 工具提供者
+- **覆盖整个语言生态**：Pascal、Python、C、C++、Rust、Go、Java、C#、TypeScript、JavaScript、Ruby、PHP、Kotlin、Swift、Lua、Dart…… 语言越接越多
 - **零样板代码**：`cdecl` 回调、JSON 序列化、工具注册全部自动生成
 - **5 层透明模型**：每层 JSON 可看、可改、可回退
 - **确定性**：主链路不依赖 LLM，可复现、可审计
 
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库，请一律访问：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 声明规范、使用手册、生成器源码与预编译包等，**一律以该仓库为准**。
+
 ```mermaid
 flowchart LR
-    A["📄 一份 Pascal / C 声明"] --> B["💎 code_decl_to_mcp"]
-    B --> C1["🅿️ xxx_tool_provider_unit.pas"]
-    B --> C2["🐍 xxx_tool_provider.py"]
+    A["📄 一份 Pascal / C 声明"] --> B["💎 MCP-API 生成器"]
+    B --> C1["🅿️ Pascal"]
+    B --> C2["🐍 Python"]
+    B --> C3["🦀 Rust"]
+    B --> C4["🐹 Go"]
+    B --> C5["☕ Java"]
+    B --> C6["🔷 C#"]
+    B --> C7["📘 TypeScript"]
+    B --> C8["… 几十种目标语言"]
 
     style A fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
     style B fill:#9B59B6,stroke:#6C3483,stroke-width:5px,color:#FFFFFF
     style C1 fill:#F39C12,stroke:#B7791F,stroke-width:4px,color:#FFFFFF
     style C2 fill:#27AE60,stroke:#145A32,stroke-width:4px,color:#FFFFFF
+    style C3 fill:#C0392B,stroke:#641E16,stroke-width:4px,color:#FFFFFF
+    style C4 fill:#1ABC9C,stroke:#0E6655,stroke-width:4px,color:#FFFFFF
+    style C5 fill:#8E44AD,stroke:#5B2C6F,stroke-width:4px,color:#FFFFFF
+    style C6 fill:#2E86C1,stroke:#1A5276,stroke-width:4px,color:#FFFFFF
+    style C7 fill:#3498DB,stroke:#1F618D,stroke-width:4px,color:#FFFFFF
+    style C8 fill:#5D6D7E,stroke:#2C3E50,stroke-width:4px,color:#FFFFFF
 ```
 
 ### 结论
 
-> 如果你需要**将 AI 能力快速、低成本、低侵入地注入到现有 Pascal 生产系统**，并且需要**多模态理解**或**双语言代码生成**能力，**pasAgent v3 是目前最具工程化价值的选择**。
+> 如果你需要**将 AI 能力快速、低成本、低侵入地注入到现有 Pascal 生产系统**，并且需要**多模态理解**或**无限语言 MCP-API 生成**能力，**pasAgent v3 是目前最具工程化价值的选择**。
 
 ---
 
 ## 🧩 四大核心应用组件 + 一个辅助工具
 
-pasAgent v3 采用 **"四大核心应用组件 + 一个辅助工具"** 的架构叙事：
+pasAgent v3 采用 **“四大核心应用组件 + 一个辅助工具”** 的架构叙事：
 
 ### 🌟 第一梯队：应用层组件（4 个）
 
@@ -160,13 +179,13 @@ pasAgent v3 采用 **"四大核心应用组件 + 一个辅助工具"** 的架构
 |:-:|------|------|----------|
 | 5 | **[`llm_service`](src/llm_service.py)** | **本地推理服务** | 断网环境 / 验证模型 / **封装成自己的 LLM 小工具** |
 
-> 💡 `llm_service` 虽然排在第 5 位，但它有一个独特价值：**可以脱离整套 pasAgent 生态，单独作为一个"本地 LLM 小工具"嵌入到你自己的 Pascal 项目里使用**。详见"目的 5"。
+> 💡 `llm_service` 虽然排在第 5 位，但它有一个独特价值：**可以脱离整套 pasAgent 生态，单独作为一个“本地 LLM 小工具”嵌入到你自己的 Pascal 项目里使用**。详见“目的 5”。
 
 ### 🎨 开发工具（跨组件的关键基础设施）
 
 | 工具 | 角色 | 为什么重要 |
 |------|------|-----------|
-| **[`code_decl_to_mcp`](code_generate_mcp.md)** | **代码生成器** | ⭐ **一份声明，同时生成 Pascal + Python 两种 API 接口** |
+| **[MCP-API 生成器](https://github.com/PassByYou888/LingoFuse-Tools)** | **无限语言代码生成器** | ⭐ **一份声明，生成几十种目标语言的 API 接口**（独立仓库，详见 LingoFuse-Tools） |
 | **[`pascal_agent_service`](src/pascal_agent_service.lpr)** | 信标（工具注册中心） | 所有工具/网关的公共基础设施 |
 | **[`pascal_agent_api`](src/pascal_agent_api.lpr)** | 工具提供者示例 | 你的项目原型 |
 | **[`mcp_api_proxy`](src/mcp_api_proxy.py)** | MCP stdio 调试代理 | 排查 MCP 握手 |
@@ -177,24 +196,44 @@ pasAgent v3 采用 **"四大核心应用组件 + 一个辅助工具"** 的架构
 
 ---
 
-## ⭐ 代码生成器：`code_decl_to_mcp`
+## ⭐ MCP-API 生成器：无限语言，一份声明
 
 > **这是 pasAgent v3 最容易被低估、却最重要的一件工具。**
+>
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库，请一律访问：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 包括生成器、声明规范、使用手册、生成器源码与预编译包等，**一律以该仓库为准**。
 
-### 一份声明，两种目标语言
+### 一份声明，几十种目标语言
 
-`code_decl_to_mcp` 接受 **Pascal 声明** 或 **C 头文件原型**，自动生成 **两种 API 接口**：
+MCP-API 生成器接受 **Pascal 声明** 或 **C 头文件原型**，自动生成 **几十种目标语言** 的 API 接口。
+
+**这不再是“双语言”时代的定位** —— 早期版本只支持 Pascal + Python 双输出；**当前版本已成熟**，能覆盖主流语言生态：
 
 ```mermaid
 flowchart LR
-    A["📄 Pascal 声明<br/>或 C 头文件"] --> B["💎 code_decl_to_mcp<br/>确定性解析"]
-    B --> C1["🅿️ Pascal 工具提供者<br/>xxx_tool_provider_unit.pas"]
-    B --> C2["🐍 Python 工具提供者<br/>xxx_tool_provider.py"]
+    A["📄 一份 Pascal / C 声明"] --> B["💎 MCP-API 生成器"]
+    B --> C1["🅿️ Pascal"]
+    B --> C2["🐍 Python"]
+    B --> C3["🦀 Rust"]
+    B --> C4["🐹 Go"]
+    B --> C5["☕ Java"]
+    B --> C6["🔷 C#"]
+    B --> C7["📘 TypeScript"]
+    B --> C8["… 几十种目标语言"]
 
     style A fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
     style B fill:#9B59B6,stroke:#6C3483,stroke-width:5px,color:#FFFFFF
     style C1 fill:#F39C12,stroke:#B7791F,stroke-width:4px,color:#FFFFFF
     style C2 fill:#27AE60,stroke:#145A32,stroke-width:4px,color:#FFFFFF
+    style C3 fill:#C0392B,stroke:#641E16,stroke-width:4px,color:#FFFFFF
+    style C4 fill:#1ABC9C,stroke:#0E6655,stroke-width:4px,color:#FFFFFF
+    style C5 fill:#8E44AD,stroke:#5B2C6F,stroke-width:4px,color:#FFFFFF
+    style C6 fill:#2E86C1,stroke:#1A5276,stroke-width:4px,color:#FFFFFF
+    style C7 fill:#3498DB,stroke:#1F618D,stroke-width:4px,color:#FFFFFF
+    style C8 fill:#5D6D7E,stroke:#2C3E50,stroke-width:4px,color:#FFFFFF
 ```
 
 ### 为什么重要？
@@ -203,46 +242,23 @@ flowchart LR
 |------|------|
 | **零样板代码** | 不需要手写 `cdecl` 回调、JSON 读写、工具注册——全部自动生成 |
 | **零 IDL** | 直接从 Pascal / C 声明生成，不需要单独写接口定义文件 |
-| **双语言输出** | 同一份声明，Pascal 和 Python 两个工具提供者**同时输出**，语义完全一致 |
-| **Pascal ↔ Python 互操作** | 算法在 Pascal 里、集成在 Python 里？生成两份，各取所需 |
+| **无限语言输出** | 同一份声明，**几十种目标语言**的工具提供者同时输出，语义完全一致 |
+| **跨语言互操作** | 算法在 Pascal 里、集成在 Go / Rust / Python 里？生成多份，各取所需 |
 | **确定性** | 主链路**不依赖 LLM**，可复现、可审计、可版本控制 |
 | **5 层透明模型** | 每层 JSON 可看、可改、可回退，出错时能精确定位 |
 
-### 典型用法
+### 获取方式
 
 ```
-1. 在 code_decl_to_mcp.exe 中粘贴 Pascal 声明
-2. 选择目标语言（Pascal / C）
-3. 走完 5 层转换
-4. 在「Final source」Tab 中：
-   ├─ 📄 pas_TabSheet → 复制 → 保存为 .pas → lazbuild 编译
-   └─ 🐍 Py_TabSheet  → 复制 → 保存为 .py → 直接 python 运行
+1. 打开 LingoFuse-Tools 仓库（下方链接）
+2. 获取生成器（源码 / 预编译包）
+3. 粘贴 Pascal / C 声明
+4. 选择目标语言
+5. 走完 5 层转换
+6. 在「Final source」Tab 中复制生成的目标语言源码
 ```
 
-**输出示例**（Pascal 侧）：
-
-```pascal
-// 自动生成的工具提供者单元
-function RegisterAPIs: TAppHnd___;
-function RegisterTools: Boolean;
-function Execute_And_Reg_all: Boolean;
-```
-
-**输出示例**（Python 侧）：
-
-```python
-# 自动生成的工具提供者模块
-def RegisterAPIs() -> Optional[Any]: ...
-def RegisterTools() -> bool: ...
-def Execute_And_Reg_all() -> bool: ...
-
-if __name__ == "__main__":
-    Execute_And_Reg_all()
-    # 直接 python xxx_tool_provider.py 即可运行
-```
-
-> 📖 完整说明：**[code_generate_mcp.md](code_generate_mcp.md)**
-> 📖 声明规范：**[pascal_code_mcp_rule.md](pascal_code_mcp_rule.md)**（Pascal 侧）· **[C_code_mcp_rule.md](C_code_mcp_rule.md)**（C 侧）
+> 📖 完整说明、声明规范与最新版本：**[https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)**
 
 ---
 
@@ -299,7 +315,7 @@ flowchart LR
 - 与 `mcp_api_tool` **可以共存**（不同 `reg_agent` 名）
 - **四重上限**保护：轮次 / 总调用数 / 单结果长度 / 总结果长度
 
-**文档** → **[src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)**（完整参数 + 场景 + 排查）
+**文档** → **[src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)**
 **兼容性** → **[src/LingoFuse_LLM_Proxy_Compatibility_Guide.md](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md)**
 
 ---
@@ -365,6 +381,8 @@ flowchart LR
 - **会话过滤**：`FActiveSessionId` 防止多会话串台
 
 **文档** → **[Pascal_Integration_Guide.md](Pascal_Integration_Guide.md)**
+**SDK 文档** → **[src/llm_client_v3.md](src/llm_client_v3.md)**
+**Structured Output 学习指南** → **[src/llm_client_v3_Structured_Output_Learning_Guide.md](src/llm_client_v3_Structured_Output_Learning_Guide.md)**
 
 ---
 
@@ -384,7 +402,7 @@ flowchart LR
 
 **关键特征**：
 - **完全离线**——不需要联网、不需要外部 API、不需要 LM Studio
-- **可嵌入**——你可以在自己的 Pascal 项目里只加载 `llm_service` + `llm_client_v3`，就得到一个"本地 LLM 小工具"
+- **可嵌入**——你可以在自己的 Pascal 项目里只加载 `llm_service` + `llm_client_v3`，就得到一个“本地 LLM 小工具”
 - **兼容 P2P 通信**——通过 LingoFuse 服务网格，天然支持跨进程、跨机器
 
 **典型用途**：
@@ -394,12 +412,12 @@ flowchart LR
 | **离线环境** | 内网、无外网访问的工业现场 |
 | **隐私敏感** | 数据不能出本地，必须全程离线 |
 | **快速验证** | 检验某个 GGUF 模型是否适合你的任务 |
-| **嵌入自研项目** | 只引入 `llm_service` + `llm_client_v3`，作为你的"AI 助手"模块 |
+| **嵌入自研项目** | 只引入 `llm_service` + `llm_client_v3`，作为你的“AI 助手”模块 |
 
 > 💡 **`llm_service` 是辅助验证工具，不是应用层核心**。生产环境更推荐用 `llm_proxy` / `llm_proxy_tool` 转发到 LM Studio 等成熟后端；但如果你需要**完全离线**或**深度嵌入**，`llm_service` 是最佳选择。
 
 **文档** → **[src/LingoFuse_LLM_Service_CLI_guide.md](src/LingoFuse_LLM_Service_CLI_guide.md)**
-**模型部署** → **[NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)**
+**模型部署** → **[src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md](src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)**
 
 ---
 
@@ -549,7 +567,7 @@ if not LLM.Generate('5 加 7 等于几？', '', sid, err) then Exit;
 
 | 组件 | 角色 | 谁关心 |
 |------|------|--------|
-| **[`code_decl_to_mcp`](code_generate_mcp.md)** | ⭐ **代码生成器**（Pascal + Python 双输出） | 要生成工具提供者的你 |
+| **[MCP-API 生成器](https://github.com/PassByYou888/LingoFuse-Tools)** | ⭐ **无限语言代码生成器**（独立仓库） | 要生成工具提供者的你 |
 | **[`pascal_agent_service`](src/pascal_agent_service.lpr)** | 📡 **信标**（工具注册中心） | 部署服务的你 |
 | **[`pascal_agent_api`](src/pascal_agent_api.lpr)** | 🎯 **工具提供者示例** | 写 Pascal 的你 |
 | **[`mcp_api_proxy`](src/mcp_api_proxy.py)** | 🕵️ **MCP stdio 调试代理** | 排查 MCP 握手的你 |
@@ -566,7 +584,7 @@ if not LLM.Generate('5 加 7 等于几？', '', sid, err) then Exit;
 flowchart TB
     subgraph Root["LingoFuse-pasAgent-v3/"]
         R1["📘 文档<br/>readme / Pascal_Integration_Guide<br/>Build_Guide / NVIDIA-Nemotron-..."]
-        R2["📐 规范<br/>code_generate_mcp / pascal_code_mcp_rule / C_code_mcp_rule"]
+        R2["📐 规范<br/>MCP-API 生成器相关规范见 LingoFuse-Tools"]
         R3["📝 元信息<br/>llms.txt / LICENSE"]
     end
 
@@ -576,7 +594,7 @@ flowchart TB
         S3["🔧 中间件<br/>language_middleware.py / generate_agent_json.py"]
         S4["🧠 LLM<br/>llm_service.py / llm_proxy.py<br/>llm_proxy_tool.py / llm_test.py"]
         S5["🔨 构建<br/>build_*.ps1 / build_pascal_agent.bat"]
-        S6["📚 LLM 文档<br/>LingoFuse_LLM_*.md（7 份）"]
+        S6["📚 LLM 文档<br/>LingoFuse_LLM_*.md"]
         S7["🐍 绑定<br/>lingofuse/（Python 包）"]
         S8["🧪 示例<br/>CreateHealthCheck/ / pascal_agent_api_ref_json.md"]
     end
@@ -598,7 +616,7 @@ flowchart TB
 - **[src/llm_client_v3.pas](src/llm_client_v3.pas)** —— Pascal 客户端 SDK
 - **[src/llm_tool_v3.lpr](src/llm_tool_v3.lpr)** —— SDK 的 GUI 演示程序
 - **[src/lingofuse/](src/lingofuse/)** —— LingoFuse Python 绑定包
-- **[zCore/src/Z.Core.pas](zCore/src/Z.Core.pas)** 等 —— 编译依赖的 Z 框架
+- **[zCore/src/Z.Core.pas](zCore/src/)** 等 —— 编译依赖的 Z 框架
 
 ---
 
@@ -610,11 +628,17 @@ flowchart TB
 |------|------|
 | **[readme.md](readme.md)** | **本文档**——项目总览与四大核心应用组件 |
 | **[Pascal_Integration_Guide.md](Pascal_Integration_Guide.md)** | **Pascal 开发者切入指南**——推荐起点 |
-| **[NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md](NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)** | 推荐模型下载与部署 |
 | **[Build_Guide.md](Build_Guide.md)** | 编译指南（Pascal + Python 组件） |
-| **[code_generate_mcp.md](code_generate_mcp.md)** | ⭐ **代码生成器使用手册**（Pascal + Python 双输出） |
-| **[pascal_code_mcp_rule.md](pascal_code_mcp_rule.md)** | Pascal 声明规范 |
-| **[C_code_mcp_rule.md](C_code_mcp_rule.md)** | C 声明规范 |
+| **[llms.txt](llms.txt)** | 面向 AI 助手的项目速览 |
+| **[LICENSE](LICENSE)** | MIT 许可证 |
+
+### MCP-API 生成器文档
+
+> ⚠️ **MCP-API 代码生成工具已独立到专用仓库，请一律访问：**
+>
+> ### 👉 [https://github.com/PassByYou888/LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)
+>
+> 包括生成器、声明规范、使用手册、生成器源码与预编译包等。
 
 ### `src/` 子目录文档（LLM 生态）
 
@@ -624,17 +648,14 @@ flowchart TB
 | **[src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md](src/LingoFuse_LLM_Proxy_Tool_CLI_Guide.md)** | 🔴 **LTB 命令行手册**（路径 B 核心） |
 | **[src/LingoFuse_LLM_Proxy_CLI_Guide.md](src/LingoFuse_LLM_Proxy_CLI_Guide.md)** | 🟣 **纯转发代理命令行手册** |
 | **[src/LingoFuse_LLM_Proxy_Compatibility_Guide.md](src/LingoFuse_LLM_Proxy_Compatibility_Guide.md)** | **250+ 后端兼容清单**（LTB 亦适用） |
-| **[src/LingoFuse_LLM_Pitfalls_For_AI.md](src/LingoFuse_LLM_Pitfalls_For_AI.md)** | **踩坑大全**——症状 / 根因 / 正确做法 |
 | **[src/LingoFuse_LLM_Service_CLI_guide.md](src/LingoFuse_LLM_Service_CLI_guide.md)** | 🟢 **本地推理服务命令行手册** |
-| **[src/LingoFuse_LLM_Service_Work_Summary.md](src/LingoFuse_LLM_Service_Work_Summary.md)** | LLM 工具链版本演进与架构决策 |
-
-### `src/` 子目录其他文档
-
-| 文档 | 说明 |
-|------|------|
+| **[src/llm_client_v3.md](src/llm_client_v3.md)** | **Pascal 客户端 SDK 文档** |
+| **[src/llm_client_v3_Structured_Output_Learning_Guide.md](src/llm_client_v3_Structured_Output_Learning_Guide.md)** | **Structured Output 完整学习指南** |
+| **[src/QUICK_START_LLM_STACK.md](src/QUICK_START_LLM_STACK.md)** | **LLM 栈快速上手** |
 | **[src/pascal_agent_api_ref_json.md](src/pascal_agent_api_ref_json.md)** | `agent_main` / `register_agent` JSON 结构详解 |
 | **[src/lingofuse/Bridge_User_Guide.md](src/lingofuse/Bridge_User_Guide.md)** | HTTP 桥接网关使用指南 |
 | **[src/LingoFuse_Pascal_Complete_Guide.md](src/LingoFuse_Pascal_Complete_Guide.md)** | Pascal 核心层完整指南（含踩坑知识库） |
+| **[src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md](src/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_XS.md)** | 推荐模型下载与部署 |
 
 ---
 
@@ -669,7 +690,9 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 > | LingoFuse 核心 | `LingoFuse32.dll` / `LingoFuse64.dll` |
 > | IPC 依赖 | `z_ipc_32.dll` / `z_ipc_64.dll`（及调试版 `z_ipc_32d.dll` / `z_ipc_64d.dll`） |
 > | 内存分配器 | `mimalloc32.dll` / `mimalloc64.dll` / `mimalloc-redirect.dll` / `mimalloc-redirect32.dll` |
-> | 应用 EXE | `mcp_api_tool.exe` / `llm_proxy_tool.exe` / `llm_proxy.exe` / `llm_client_v3`（GUI 为 `llm_tool_v3.exe`） / `llm_service.exe` / `llm_test.exe` / `pascal_agent_service.exe` / `pascal_agent_api.exe` / `mcp_api_proxy.exe` / `bridge.exe` / `code_decl_to_mcp.exe` / `HealthCheck.exe` |
+> | 应用 EXE | `mcp_api_tool.exe` / `llm_proxy_tool.exe` / `llm_proxy.exe` / `llm_client_v3`（GUI 为 `llm_tool_v3.exe`） / `llm_service.exe` / `llm_test.exe` / `pascal_agent_service.exe` / `pascal_agent_api.exe` / `mcp_api_proxy.exe` / `bridge.exe` / `HealthCheck.exe` |
+>
+> **MCP-API 生成器请从 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 仓库获取。**
 
 ### ⚠️ 首次运行缺少 DLL？
 
@@ -710,7 +733,7 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 | 我想自己写 Pascal 客户端 | **用 [`llm_client_v3`](src/llm_client_v3.pas) SDK** |
 | 我想把 LLM 塞进自己的项目 | **用 [`llm_service`](src/llm_service.py) + `llm_client_v3`**，就是一个本地 LLM 小工具 |
 | 有 Python 客户端吗？ | **没有**——Python 天生能接智能体生态（LangChain / OpenAI SDK / …），不需要绕道 |
-| 代码生成器生成什么？ | **Pascal + Python 两种工具提供者**——见 [code_generate_mcp.md](code_generate_mcp.md) |
+| **MCP-API 生成器支持哪些语言？** | **几十种目标语言**——不再局限于双语言，详见 **[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)** |
 | 需要联网吗？ | **不需要**（`llm_service` 完全离线）。用 `llm_proxy` / `llm_proxy_tool` 转发云端 API 时需联网 |
 | 三种 LLM 服务端能同时跑吗？ | **默认不能**（共享同一端点）。要共存须改 `--endpoint` + `--app-name` |
 | 缺 DLL 又不想编译？ | **去[预编译包发布页](https://github.com/PassByYou888/LingoFuse-pasAgent-v3/releases/tag/pre_build)下载，解压即用** |
