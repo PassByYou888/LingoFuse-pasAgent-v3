@@ -233,7 +233,7 @@ except ImportError:
 # All JSON and string reads/writes on a LingoFuse DataHandle are
 # delegated to lingofuse.lf_io. This module guarantees:
 #   * ensure_ascii=False  -> no \uXXXX escapes on the wire
-#   * NUL termination     -> matches Pascal's LF_ReadString
+#   * NUL termination     -> matches the wire protocol for string framing
 #   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
 #   * explicit NUL on c_char_p LF_* parameters
 #
@@ -542,7 +542,7 @@ async def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
 
         # Write the request payload. write_json() guarantees
         # ensure_ascii=False (no \uXXXX escapes) and appends the NUL
-        # terminator required by the Pascal-side LF_ReadString.
+        # terminator required by the wire protocol for string framing.
         try:
             write_json(req, arguments)
         except Exception:

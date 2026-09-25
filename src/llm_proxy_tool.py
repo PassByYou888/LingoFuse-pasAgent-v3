@@ -320,7 +320,7 @@ def _dumps_json_safe(value: Any, *, source: str) -> str:
         {"__repr__": "<repr(value)>"} instead of raising.
 
     This function never raises. It exists so that a rogue tool result
-    (for example a Pascal-provided object graph with a cycle) cannot
+    (for example an object graph with a circular reference) cannot
     abort the entire multi-round tool loop.
 
     Args:
@@ -1466,7 +1466,7 @@ class LLMProxyToolService:
         All payload I/O goes through lingofuse.lf_io:
           * write_json() serializes `payload` with ensure_ascii=False
             (no \\uXXXX escapes) and appends the NUL terminator
-            required by the Pascal-side LF_ReadString.
+            required by the wire protocol for string framing.
           * cstr() supplies NUL-terminated UTF-8 bytes for the
             c_char_p parameter of LF_Sequenced_Notify.
 
@@ -1570,8 +1570,8 @@ class LLMProxyToolService:
                 logger.warning(
                     "MCP middleware pre-connect did not yield any tools. "
                     "Tool execution will be disabled until a retry "
-                    "succeeds. Make sure pascal_agent_service.exe and "
-                    "pascal_agent_api.exe are running on ipc:agent."
+                    "succeeds. Make sure the agent service and agent API "
+                    "provider are running on ipc:agent."
                 )
         elif not _HAS_MIDDLEWARE:
             logger.warning("language_middleware not importable; "

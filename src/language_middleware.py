@@ -5,8 +5,8 @@ language_middleware.py - v7.7 (LingoFuse Native Multi-Language Middleware)
 DESCRIPTION
     This module provides a language-agnostic middleware for LingoFuse,
     designed to act as a bridge between MCP (Model Context Protocol)
-    servers (like mcp_api_tool.py) and a backend tool provider implemented
-    in any language (Pascal, Python, etc.). It handles:
+    servers (like mcp_api_tool.py) and a backend tool provider
+    implemented in any language. It handles:
 
         - Lazy connection to a LingoFuse endpoint (IPC or TCP).
         - Dynamic retrieval of tool definitions from the backend via
@@ -91,7 +91,7 @@ CHANGELOG (v7.5)
 CHANGELOG (v7.4)
     * FIXED: `_cleanup()` ordering. The previous implementation called
       LF_Shutdown() BEFORE LF_FreeApp(), which destroys the underlying
-      TLF_App objects and leaves LF_FreeApp operating on a dangling
+      app objects and leaves LF_FreeApp operating on a dangling
       handle. The new order is:
 
           LF_ExitMainThread() -> LF_FreeApp() -> LF_Shutdown()
@@ -118,18 +118,18 @@ CHANGELOG (v7.4)
       accidentally reintroduce the bug.
 
 CHANGELOG (v7.3)
-    * `_read_string` now mirrors Pascal's LF_ReadString behavior: when
-      no null terminator is found, it returns the entire remaining
-      buffer instead of an empty bytes object. This is important for
-      inputs that were not null-terminated (e.g. raw JSON from an HTTP
-      bridge).
+    * `_read_string` now mirrors the standard wire-protocol behavior:
+      when no null terminator is found, it returns the entire
+      remaining buffer instead of an empty bytes object. This is
+      important for inputs that were not null-terminated (e.g. raw
+      JSON from an HTTP bridge).
     * `call_tool` serializes arguments with `ensure_ascii=False` so
       that non-ASCII characters (e.g. Chinese) reach the backend
       unescaped.
     * `_reg_tool_callback` now reads the "name" field (matching the
-      Pascal side's `do_register_agent`) instead of the non-existent
-      "tool_name". Previously, every registration attempt failed with
-      "Missing tool_name".
+      reference backend agent's `do_register_agent`) instead of the
+      non-existent "tool_name". Previously, every registration attempt
+      failed with "Missing tool_name".
     * Removed unused native imports to keep the module self-consistent
       with the API actually exercised at runtime.
 
@@ -182,7 +182,7 @@ DEPENDENCIES
     - Python 3.7+
 
 AUTHOR
-    PassByYou888 / LingoFuse Team
+    LingoFuse Team
 """
 
 import json
@@ -252,7 +252,7 @@ from lingofuse._lf_native import (
 # All JSON and string reads/writes on a LingoFuse DataHandle go through
 # lingofuse.lf_io. This module guarantees:
 #   * ensure_ascii=False  -> no \uXXXX escapes on the wire
-#   * NUL termination     -> matches Pascal's LF_ReadString
+#   * NUL termination     -> matches the wire protocol for string framing
 #   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
 #   * explicit NUL on c_char_p LF_* parameters
 #
@@ -347,7 +347,8 @@ def _reg_tool_callback(trigger: DataHnd, inp: DataHnd, out: DataHnd):
     """
     Callback for the `register_agent` API.
 
-    Input JSON (matching Pascal's `do_register_agent`):
+    Input JSON (matching the reference backend agent's
+    `do_register_agent`):
         {
             "name":        "tool_name",
             "description": "...",
@@ -385,7 +386,8 @@ def _reg_tool_callback(trigger: DataHnd, inp: DataHnd, out: DataHnd):
         if not isinstance(req, dict):
             raise ValueError("Request must be a JSON object")
 
-        # Field names must match the Pascal producer (do_register_agent).
+        # Field names must match the reference backend producer
+        # (do_register_agent).
         name = req.get('name')
         if not name:
             raise ValueError('Missing "name" field')
@@ -599,9 +601,9 @@ class LanguageMiddleware:
         trigger a fresh `_connect()`, which reuses the same App handle
         in `LF_PrepareClient`.
 
-        Calling `LF_Shutdown()` here would destroy the underlying
-        TLF_App object, and the subsequent `LF_PrepareClient()` would
-        receive a dangling handle - undefined behaviour.
+        Calling `LF_Shutdown()` here would destroy the underlying App
+        object, and the subsequent `LF_PrepareClient()` would receive
+        a dangling handle - undefined behaviour.
 
         The library is unloaded exactly once, in `_cleanup()`, after
         the App has been released. This mirrors the semantics of
@@ -961,7 +963,7 @@ class LanguageMiddleware:
         try:
             # write_json() guarantees ensure_ascii=False (no \uXXXX
             # escapes) and appends the NUL terminator required by the
-            # Pascal-side LF_ReadString.
+            # wire protocol for string framing.
             write_json(req, arguments)
             resp = LF_Call(cstr(target_app), req, self._timeout_ms)
         finally:

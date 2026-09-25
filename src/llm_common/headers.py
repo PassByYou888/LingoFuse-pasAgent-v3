@@ -186,7 +186,7 @@ def parse_extra_headers(raw: str) -> Dict[str, str]:
     preprocessor:
 
       * The toolchain-wide repair policy is for inbound external
-        payloads whose source is a non-Pascal producer that might
+        payloads whose source is a non-conformant producer that might
         emit malformed JSON. A CLI flag is written by the operator
         and is expected to be exactly what they typed.
 

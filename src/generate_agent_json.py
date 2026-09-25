@@ -283,7 +283,7 @@ def generate_configs(
         "generic":  "Generic MCP Client",
     }
     config_key = "mcpServers"
-    server_key = "pascal-backend"
+    server_key = "lingofuse-backend"
     http_url = f"http://{host}:{port}/mcp"
     sse_url  = f"http://{host}:{port}/sse"
 

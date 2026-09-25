@@ -920,7 +920,7 @@ class LLMProxyService:
         All payload I/O goes through lingofuse.lf_io:
           * write_json() serializes `payload` with ensure_ascii=False
             (no \\uXXXX escapes) and appends the NUL terminator
-            required by the Pascal-side LF_ReadString.
+            required by the wire protocol for string framing.
           * cstr() supplies NUL-terminated UTF-8 bytes for the
             c_char_p parameter of LF_Sequenced_Notify.
 

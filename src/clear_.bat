@@ -10,5 +10,6 @@ rd /q /s .\build
 rd /q /s .\dist
 rd /q /s .\__pycache__
 rd /q /s .\llm_common\__pycache__
-call .\lingofuse\clear_.bat
+cd .\lingofuse\
+call clear_.bat
 

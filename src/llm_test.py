@@ -325,7 +325,7 @@ from lingofuse._lf_native import (
 # All JSON and string reads/writes on a LingoFuse DataHandle go through
 # lingofuse.lf_io. This module guarantees:
 #   * ensure_ascii=False  -> no \uXXXX escapes on the wire
-#   * NUL termination     -> matches Pascal's LF_ReadString
+#   * NUL termination     -> matches the wire protocol for string framing
 #   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
 #   * explicit NUL on c_char_p LF_* parameters
 from lingofuse.lf_io import (
@@ -763,7 +763,7 @@ def remote_call(server_app: str, api_name: str,
     All DataHandle I/O goes through lingofuse.lf_io:
       * write_json() serializes request_json with ensure_ascii=False
         (no \\uXXXX escapes) and appends the NUL terminator required
-        by the Pascal-side LF_ReadString.
+        by the wire protocol for string framing.
       * cstr() supplies NUL-terminated UTF-8 bytes for the c_char_p
         parameter of LF_Call.
       * read_json() reads the response up to the first NUL, decodes it
@@ -944,9 +944,10 @@ def on_llm_stream(trigger, inp: DataHandle) -> None:
     closed -> record session closure
 
     The payload is read through lingofuse.lf_io.read_json, which
-    tolerates both NUL-terminated input (Pascal producers) and raw
-    input (HTTP bridges). The handle position is rewound to 0 before
-    reading, matching the previous DataHandle.read_json() behaviour.
+    tolerates both NUL-terminated input (from NUL-terminating producers)
+    and raw input (from HTTP bridges). The handle position is rewound
+    to 0 before reading, matching the previous DataHandle.read_json()
+    behaviour.
 
     Failure isolation (audit, unchanged)
     ------------------------------------
