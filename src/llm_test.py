@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LingoFuse LLM Test Client - interactive multi-session REPL (v3.10).
+LingoFuse LLM Test Client - interactive multi-session REPL (v4.0).
 
-Matches the v3.0 server protocol:
+Matches the v4.0 server protocol (UID-addressed streaming):
 
   Streaming messages received on the notify API:
       {"type": "chunk",  "session_id": "...", "text": "..."}
@@ -13,154 +13,111 @@ Matches the v3.0 server protocol:
       {"type": "closed", "session_id": "...", "reason": "client|timeout|shutdown"}
 
   Call APIs:
-      generate(content, prompt?, client_name?, session_id?, options?,
-               attachments?)
+      generate(content, prompt?, session_id?, options?, attachments?)
           -> {code, session_id, task_id, mode}
-      create_session(client_name, system_message?)  -> {code, session_id}
-      close_session(session_id, cancel_running?)    -> {code, status}
-      cancel_session(session_id)                    -> {code, status}
-      list_sessions(client_name?)                   -> {code, sessions}
-      set_system_message(content)                   -> {code, status}
-      get_api_capabilities()                        -> {code, server_kind,
-                                                        capabilities: {...}}
-      health()                                      -> {code, status, ...}
+      create_session(system_message?)          -> {code, session_id, client_uid_hex}
+      close_session(session_id, cancel_running?) -> {code, status}
+      cancel_session(session_id)               -> {code, status}
+      list_sessions()                          -> {code, sessions, count}
+      set_system_message(content)              -> {code, status}
+      get_api_capabilities()                   -> {code, server_kind,
+                                                         capabilities}
+      health()                                 -> {code, status, ...}
+
+CHANGELOG (v4.0)
+    * UID-addressed streaming protocol.
+      The client no longer generates an app name, no longer creates an
+      App, and no longer calls LF_BindApp. Instead, it registers the
+      notify API directly into the process-wide P2P namespace via
+      lingofuse.register_p2p_notify().
+
+      The LingoFuse framework injects the client's 32-byte session UID
+      into the header of every outbound request, so the server learns
+      the UID from the Input DataHandle of the client's first
+      create_session call. All stream events are then routed back via
+      LF_UID_Sequenced_Notify using that UID.
+
+      The `client_name` field is GONE from every request payload.
+      The server ignores it if a legacy client sends it.
+
+    * `STATE.client_name` and all its uses are removed.
+    * The startup banner shows the P2P registration instead of a
+      generated app name.
+    * `cmd_new` and `run_once` no longer send `client_name` in the
+      payload.
+    * `cmd_sessions` no longer sends a `client_name` filter. The
+      server implicitly filters by the caller's UID, so the client
+      only sees its own sessions.
+    * `/sessions` displays `client_uid_hex` (prefix) instead of
+      `client_name`.
+    * Shutdown no longer calls `app.free()`; only
+      `LF_ExitMainThread` + `LF_Shutdown`.
 
 CHANGELOG (v3.10)
     * JSON handling unification (T1 / T2 / T3 / T4):
-      - T1: `remote_call` now guards the entire request phase
-        (DataHandle creation, write_json serialization, LF_Call) and
-        the entire response phase (DataHandle._from_raw, read_json)
-        with try/except blocks. Any failure - including a circular
-        reference that would make write_json raise ValueError, or an
-        invalid UTF-8 payload that would make read_json raise
-        RuntimeError - is caught and converted into a `None` return
-        value. The caller's `if resp is None` check then handles the
-        failure exactly as it already handled a null response handle.
-        Previously a serialization error or a malformed response
-        could propagate out of remote_call and abort the REPL.
-      - T2: `cmd_new` and `run_once` now use `resp.get("session_id")`
-        with an explicit empty check instead of `resp["session_id"]`.
-        A server that returns code 0 but omits session_id (which has
-        been observed on a small number of legacy responses) no
-        longer raises KeyError.
-      - T3: `cmd_sessions` now uses `s.get(...)` with safe defaults
-        for every field it prints. A malformed session summary from
-        the server (missing session_id, status, or message_count)
-        no longer raises KeyError; missing fields are printed as
-        placeholders.
-      - T4: `cmd_health` now converts every capability name to `str`
-        before joining. A server that returns a non-string key in
-        the api_capabilities map (rare, but not impossible) no
-        longer raises TypeError on the join.
-    * Audit confirmation (no code change needed):
-      - `on_llm_stream` already wraps its entire body in a try/except
-        and sets STATE.finish_event on any exception, so a malformed
-        notify payload cannot leave the REPL waiting forever.
-      - `fetch_capabilities` already normalizes every value with
-        `int(v)` inside try/except and safely handles a non-dict
-        capabilities map.
-      - The attachment helpers (`_read_text_file`, `_read_image_file`,
-        `_build_attachments`) do not perform JSON serialization or
-        parsing; they only read files and assemble plain dicts.
+      - T1: remote_call guards the entire request phase and the entire
+        response phase with try/except blocks. Any failure is caught
+        and converted into a `None` return value.
+      - T2: cmd_new and run_once use resp.get("session_id") with an
+        explicit empty check.
+      - T3: cmd_sessions uses s.get(...) with safe defaults.
+      - T4: cmd_health converts every capability name to str.
 
 CHANGELOG (v3.9)
-    * Import path follow-up: the lf_io module was relocated from the
-      llm_common package into the lingofuse package. The docstring and
-      inline comments in this file now reference lingofuse.lf_io
-      instead of the old llm_common.lf_io path. There is no behavioural
-      change: the runtime imports were already using lingofuse.lf_io
-      at the end of the v3.8 cycle.
+    * Import path follow-up: lf_io was relocated from llm_common into
+      the lingofuse package.
 
 CHANGELOG (v3.8)
     * All JSON and string I/O on LingoFuse DataHandles is delegated to
-      lingofuse.lf_io. The client no longer calls DataHandle.write_json
-      / DataHandle.read_json, and no longer builds c_char_p strings by
-      hand. Every request payload, every response payload, and every
-      streaming notify payload goes through lf_io.write_json /
-      lf_io.read_json, and every LF_Call / LF_PrepareClient string
-      parameter goes through lf_io.cstr. This guarantees:
-        - ensure_ascii=False on every payload (no \\uXXXX escapes)
-        - NUL termination on every string written to a DataHandle
-        - NUL-tolerant reads (accepts raw JSON from HTTP bridges)
-        - explicit NUL on every c_char_p LF_* parameter
-      The DataHandle position is rewound to 0 before every read, so
-      the behaviour matches the previous DataHandle.read_json() which
-      did the same internally.
+      lingofuse.lf_io.
 
 SERVER CAPABILITY DISCOVERY
 ---------------------------
 Two sibling server kinds may be running on the same endpoint:
-  - llm_service  : local inference, supports set_system_message
-  - llm_proxy    : stateless forwarder to an OpenAI-compatible backend,
-                   does NOT support set_system_message
-  - llm_proxy_tool : proxy with server-side tool execution (LTB)
+  - llm_service     : local inference, supports set_system_message
+  - llm_proxy       : stateless forwarder, does NOT support
+                      set_system_message
+  - llm_proxy_tool  : proxy with server-side tool execution (LTB)
 
 This client discovers the running server's API capability matrix by
-calling `get_api_capabilities`, which returns a dictionary of the form:
-
-    {"generate": 1, "create_session": 1, "set_system_message": 0, ...}
-
-where 1 = supported and 0 = not supported. The matrix is fetched once
-after connection and cached in STATE.api_capabilities. The convenience
+calling `get_api_capabilities`. The matrix is fetched once after
+connection and cached in STATE.api_capabilities. The convenience
 function `llm_supported(api_name)` returns True/False for a single API
 name and will re-fetch the matrix on a cache miss.
 
 Commands that depend on optional APIs (for example /sys which relies on
-set_system_message) consult `llm_supported` before invoking the server,
-so the user gets a friendly hint with an alternative workflow instead of
-a raw "unsupported" error from the backend.
+set_system_message) consult `llm_supported` before invoking the server.
 
-ATTACHMENTS (v3.7)
-------------------
+ATTACHMENTS
+-----------
 A one-shot invocation may attach text files and image files to the
 single generate request:
 
     python llm_test.py --content "review this code" --text main.py
     python llm_test.py --content "describe this chart" --image a.png
-    python llm_test.py --text a.py --text b.py --image chart.png
 
-The client reads each file, wraps it into the standard `attachments`
-array, and sends it alongside the `content`. Text files are decoded as
-UTF-8 with GBK and Latin-1 fallbacks; image files are base64-encoded.
 Client-side size limits match the server's exactly, so an oversized
-attachment fails fast with a clear message rather than a server error.
-
-Attachment support is a one-shot mode feature only. The interactive
-REPL does not expose an /attach command; use the command-line flags
-for one-shot invocations that need attachments.
+attachment fails fast with a clear message.
 
 CRITICAL DESIGN NOTE
 --------------------
-`client_name` in every Call above MUST be the real LingoFuse application
-name that this process registered with `LF_BindApp`. Only that app is
-reachable by the server's `LF_Sequenced_Notify`. Using an arbitrary
-human-readable string will result in silent delivery failures with the
-server printing `no found app(...)` for every streamed token.
-
-In this client, the app name is generated automatically by
-`generate_app_name()` after `LF_PrepareDone()` and stored as
-`STATE.client_name`. All session creation calls use that exact value.
+The `client_name` field is NO LONGER used. The server learns the
+client's routing UID from the Input handle of the first call. The
+client does not need to (and cannot) tell the server its UID.
 
 Thinking stream
 ---------------
 Reasoning models emit reasoning_content separately from the final
 content. The server forwards reasoning_content as `think` events and
-content as `chunk` events. This client renders think text in a dim ANSI
-style (when the console supports it), so the user can watch the model
-reason in real time instead of waiting in silence before the final
-answer starts.
+content as `chunk` events. This client renders think text in a dim
+ANSI style (when the console supports it).
 
 Console / emoji support
 -----------------------
 _setup_console_encoding() runs before any output and:
   - switches the Windows console code page to UTF-8 (65001),
   - enables virtual terminal processing for ANSI colours,
-  - reconfigures Python stdout/stderr/stdin to UTF-8 with
-    errors='replace'.
-
-Rendering emoji at full colour still requires a terminal that supports
-Unicode glyphs (Windows Terminal, VSCode integrated terminal, or a
-PowerShell window with a font that includes emoji).
+  - reconfigures Python stdout/stderr/stdin to UTF-8.
 
 Usage
 -----
@@ -194,7 +151,6 @@ All comments and logs are in English.
 
 import os
 import sys
-import json
 import time
 import base64
 import argparse
@@ -204,33 +160,20 @@ from typing import Any, Dict, List, Optional
 
 # ----------------------------------------------------------------------
 # Frozen-executable detection and help-text invocation helpers
-#
-# The client can be launched in two ways:
-#   1. From source:    python llm_test.py [OPTIONS]
-#   2. As a frozen exe: llm_test.exe [OPTIONS]
-#
-# The `--help` output adapts its usage line and examples accordingly so
-# the user always sees the correct command for the current packaging.
 # ----------------------------------------------------------------------
 def is_frozen_exe() -> bool:
     """
     Return True if this process is running from a frozen executable.
 
     Detects PyInstaller (one-file or one-dir) and Nuitka by checking
-    both `sys.frozen` and `sys._MEIPASS`. This mirrors the detection
-    used by llm_service.py, llm_proxy.py, mcp_api_tool.py and mcp_api_proxy.py
-    in the same project.
+    both `sys.frozen` and `sys._MEIPASS`.
     """
     return getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
 
 
 def get_invocation_name() -> str:
     """
-    Return the program name shown at the top of `--help` (the `prog=`
-    value).
-
-    - Frozen exe: the exe filename, e.g. "llm_test.exe".
-    - Script:     the script filename, e.g. "llm_test.py".
+    Return the program name shown at the top of `--help`.
     """
     if is_frozen_exe():
         return os.path.basename(sys.executable)
@@ -240,9 +183,6 @@ def get_invocation_name() -> str:
 def get_example_invocation() -> str:
     """
     Return the full command prefix used in the `--help` examples.
-
-    - Frozen exe: "llm_test.exe"
-    - Script:     "python llm_test.py"
     """
     if is_frozen_exe():
         return os.path.basename(sys.executable)
@@ -260,14 +200,6 @@ def _setup_console_encoding() -> None:
     Chinese systems) that cannot represent emoji. Without preparation,
     Python raises UnicodeEncodeError or silently substitutes '?' when
     the server sends an emoji in a chunk.
-
-    Steps:
-      1. Switch the Windows console code page to UTF-8 (65001) for
-         both input and output.
-      2. Enable virtual terminal processing so ANSI escapes (dim,
-         bold, colours) are interpreted rather than printed.
-      3. Reconfigure Python stdout/stderr/stdin to UTF-8 with
-         errors='replace'.
     """
     if sys.platform == "win32":
         try:
@@ -310,24 +242,21 @@ _setup_console_encoding()
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from lingofuse import App, generate_app_name, set_option, check_main_thread
+from lingofuse import (
+    set_option,
+    check_main_thread,
+    register_p2p_notify,
+)
 from lingofuse.core import DataHandle
 from lingofuse._lf_native import (
     LF_ResetPrepare, LF_PrepareClient, LF_PrepareDone,
     LF_Call, LF_ExitMainThread, LF_Shutdown,
-    LF_BindApp, LF_SetPos, LF_FreeData,
+    LF_SetPos, LF_FreeData,
 )
 
 # ----------------------------------------------------------------------
 # Unified LingoFuse DataHandle I/O
 # ----------------------------------------------------------------------
-#
-# All JSON and string reads/writes on a LingoFuse DataHandle go through
-# lingofuse.lf_io. This module guarantees:
-#   * ensure_ascii=False  -> no \uXXXX escapes on the wire
-#   * NUL termination     -> matches the wire protocol for string framing
-#   * NUL-tolerant reads  -> accepts raw JSON from HTTP bridges
-#   * explicit NUL on c_char_p LF_* parameters
 from lingofuse.lf_io import (
     cstr,
     read_json,
@@ -348,19 +277,11 @@ THINK_COLOR = "\033[2m"
 RESET_COLOR = "\033[0m"
 
 # Client-side attachment limits. These MUST stay in sync with the
-# server-side limits defined in llm_common/attachments.py. Matching
-# the values here lets us reject an oversized attachment immediately,
-# with a message that names the file and the actual size, instead of
-# forwarding it to the server and letting the server reject it with a
-# generic error.
-MAX_TEXT_BYTES = 256 * 1024          # 256 KB per text file
-MAX_IMAGE_B64_BYTES = 8 * 1024 * 1024  # 8 MB base64 per image file
+# server-side limits defined in llm_common/attachments.py.
+MAX_TEXT_BYTES = 256 * 1024
+MAX_IMAGE_B64_BYTES = 8 * 1024 * 1024
 
-# MIME guess table for common text file extensions. The server does
-# not enforce a MIME whitelist on text attachments, so this table is
-# purely informational: it appears in the `<attachment name="...">`
-# wrapper and in the client's own log line. Extensions not listed fall
-# back to text/plain.
+# MIME guess table for common text file extensions.
 _TEXT_MIME_BY_EXT = {
     ".txt":  "text/plain",
     ".md":   "text/markdown",
@@ -377,10 +298,7 @@ _TEXT_MIME_BY_EXT = {
     ".yml":  "text/yaml",
 }
 
-# MIME guess table for image file extensions. The server DOES enforce
-# a whitelist on image attachments, so an unrecognized extension here
-# will be rejected by the server with a clear error. We still attempt
-# the upload so that the user sees the server's message.
+# MIME guess table for image file extensions.
 _IMAGE_MIME_BY_EXT = {
     ".png":  "image/png",
     ".jpg":  "image/jpeg",
@@ -397,9 +315,7 @@ def parse_args() -> argparse.Namespace:
     Parse command-line arguments.
 
     The usage line and the examples section of `--help` adapt to the
-    current packaging: when running from source they show
-    "python llm_test.py ...", when running as a frozen exe they show
-    "llm_test.exe ...".
+    current packaging.
     """
     invocation = get_example_invocation()
 
@@ -412,7 +328,7 @@ def parse_args() -> argparse.Namespace:
         f"  {invocation} --content \"hello\" --thinking\n"
         f"  {invocation} --content \"hello\" --keep\n"
         "\n"
-        "One-shot mode with attachments (v3.7):\n"
+        "One-shot mode with attachments:\n"
         f"  {invocation} --content \"review this code\" --text main.py\n"
         f"  {invocation} --content \"describe this chart\" --image a.png\n"
         f"  {invocation} --text a.py --text b.py --image chart.png\n"
@@ -434,14 +350,14 @@ def parse_args() -> argparse.Namespace:
         "  /help                    Show this help\n"
         "  /quit, /exit             Quit\n"
         "\n"
-        "Server capability discovery:\n"
-        "  Two sibling servers may be running on the same endpoint:\n"
-        "    llm_service - supports set_system_message\n"
-        "    llm_proxy   - does NOT support set_system_message\n"
-        "  The client calls get_api_capabilities after connecting to\n"
-        "  learn which APIs the running server supports. Commands that\n"
-        "  depend on optional APIs (e.g. /sys) consult the capability\n"
-        "  matrix and provide a friendly fallback when unsupported.\n"
+        "Routing model (v4.0 - UID-only):\n"
+        "  The client registers its notify API ('llm_stream') into the\n"
+        "  process-wide P2P namespace. It does NOT create an app and\n"
+        "  does NOT call LF_BindApp. The LingoFuse framework injects\n"
+        "  the client's 32-byte session UID into the header of every\n"
+        "  outbound request, so the server learns the UID from the\n"
+        "  Input handle of the first create_session call. All stream\n"
+        "  events are routed back with LF_UID_Sequenced_Notify.\n"
         "\n"
         "Environment variables (read once at startup):\n"
         "  LINGOFUSE_ENDPOINT   - LingoFuse endpoint (default: ipc:llm_service)\n"
@@ -455,7 +371,7 @@ def parse_args() -> argparse.Namespace:
         prog=get_invocation_name(),
         description=(
             "LingoFuse LLM Test Client - interactive multi-session REPL "
-            "(v3.10)"
+            "(v4.0, UID-addressed)"
         ),
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -521,7 +437,7 @@ def parse_args() -> argparse.Namespace:
         help="One-shot mode: enable thinking for this turn.",
     )
 
-    # ---- One-shot mode attachments (v3.7) ----
+    # ---- One-shot mode attachments ----
     parser.add_argument(
         "--text",
         action="append",
@@ -529,7 +445,7 @@ def parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="One-shot mode: attach a text file (repeatable). The file "
              "is decoded as UTF-8, GBK, or Latin-1 and merged into the "
-             "user message. See also --image.",
+             "user message.",
     )
     parser.add_argument(
         "--image",
@@ -563,26 +479,14 @@ def parse_args() -> argparse.Namespace:
 
 
 # ----------------------------------------------------------------------
-# Attachment loading (v3.7)
+# Attachment loading
 # ----------------------------------------------------------------------
 def _read_text_file(path: str) -> str:
     """
     Read a text file and return its content as a Python string.
 
-    The decoder tries UTF-8 first (the modern default), then GBK
-    (still common on Windows in Chinese environments), then Latin-1
-    (which never fails because every byte sequence is valid Latin-1).
-    The returned string is what the server will embed into the user
-    message inside an <attachment> block.
-
-    Raises:
-        FileNotFoundError: if the path does not exist.
-        IsADirectoryError: if the path is a directory.
-        OSError: on any other read failure.
-        ValueError: if the file exceeds MAX_TEXT_BYTES.
+    The decoder tries UTF-8 first, then GBK, then Latin-1.
     """
-    # os.path.getsize is a cheap stat; using it before read() lets us
-    # reject an oversized file without pulling it into memory.
     size = os.path.getsize(path)
     if size > MAX_TEXT_BYTES:
         raise ValueError(
@@ -598,30 +502,14 @@ def _read_text_file(path: str) -> str:
             return raw.decode(encoding)
         except UnicodeDecodeError:
             continue
-    # latin-1 never fails, so this line is unreachable. It exists
-    # only to satisfy the type checker.
     return raw.decode("latin-1", errors="replace")
 
 
 def _read_image_file(path: str) -> str:
     """
     Read an image file and return its content as a base64 string.
-
-    The result is what the server will embed into a data: URL of the
-    form "data:image/png;base64,<result>". The base64 alphabet has no
-    line breaks in the standard (non-MIME) variant, which is what the
-    OpenAI image_url part expects.
-
-    Raises:
-        FileNotFoundError: if the path does not exist.
-        IsADirectoryError: if the path is a directory.
-        OSError: on any other read failure.
-        ValueError: if the base64 representation would exceed
-            MAX_IMAGE_B64_BYTES.
     """
     size = os.path.getsize(path)
-    # base64 expands by 4/3 plus padding; add 4 bytes for the padding
-    # so the check matches the server's limit exactly.
     b64_size = ((size + 2) // 3) * 4
     if b64_size > MAX_IMAGE_B64_BYTES:
         raise ValueError(
@@ -639,13 +527,6 @@ def _read_image_file(path: str) -> str:
 def _guess_mime(path: str, is_image: bool) -> str:
     """
     Return a best-effort MIME type based on the file extension.
-
-    The server does not enforce a MIME whitelist for text attachments,
-    so an unrecognized text extension falls back to text/plain and is
-    accepted. Image attachments DO have a server-side whitelist, so an
-    unrecognized image extension maps to image/png and will be
-    rejected by the server with a clear error message naming the
-    extension and the allowed set.
     """
     ext = os.path.splitext(path)[1].lower()
     table = _IMAGE_MIME_BY_EXT if is_image else _TEXT_MIME_BY_EXT
@@ -657,21 +538,6 @@ def _guess_mime(path: str, is_image: bool) -> str:
 def _build_attachments(args: argparse.Namespace) -> List[Dict[str, Any]]:
     """
     Build the `attachments` array from --text / --image arguments.
-
-    Order is: all text files first (in the order they appear on the
-    command line), then all image files. This keeps the prompt layout
-    predictable: text always precedes images in the assembled user
-    message.
-
-    Returns:
-        A list of dicts ready to be placed in the generate payload's
-        "attachments" field. Empty list if no --text / --image flags
-        were given.
-
-    Raises:
-        FileNotFoundError / IsADirectoryError / OSError / ValueError:
-            propagated so that run_once() can print a precise error
-            and exit with a non-zero status.
     """
     attachments: List[Dict[str, Any]] = []
 
@@ -700,8 +566,7 @@ def _describe_attachments(
     attachments: List[Dict[str, Any]],
 ) -> str:
     """
-    Return a short human-readable summary of an attachments array for
-    the client's own log line. Not sent to the server.
+    Return a short human-readable summary of an attachments array.
     """
     if not attachments:
         return "(none)"
@@ -733,14 +598,11 @@ class ClientState:
         self.current_session_id: Optional[str] = None
         self.thinking_enabled: bool = False
         self.exiting: bool = False
-        # Real LingoFuse app name (set once after PrepareDone). This is
-        # the only client_name we ever send to the server.
-        self.client_name: Optional[str] = None
+        # NOTE: v4.0 has no `client_name`. The server learns the
+        # client's UID from the Input handle of the first call.
         self.closed_sessions: List[str] = []
         self.lock = threading.Lock()
-        # Cached API capability matrix returned by the server's
-        # get_api_capabilities Call API. Keys are API names, values are
-        # integers: 1 = supported, 0 = not supported.
+        # Cached API capability matrix.
         self.api_capabilities: Dict[str, int] = {}
         # Identifies which server kind is answering ("service" or
         # "proxy"). Populated alongside api_capabilities.
@@ -760,32 +622,13 @@ def remote_call(server_app: str, api_name: str,
     Send a Call request and return the parsed JSON response.
     Returns None on any failure (serialization, transport, parse).
 
-    All DataHandle I/O goes through lingofuse.lf_io:
-      * write_json() serializes request_json with ensure_ascii=False
-        (no \\uXXXX escapes) and appends the NUL terminator required
-        by the wire protocol for string framing.
-      * cstr() supplies NUL-terminated UTF-8 bytes for the c_char_p
-        parameter of LF_Call.
-      * read_json() reads the response up to the first NUL, decodes it
-        as UTF-8, and parses it as JSON.
-
     Failure isolation (T1)
     ----------------------
     Every step of the round trip is guarded:
-
       * DataHandle creation, write_json serialization, and LF_Call are
-        wrapped together. A circular reference in request_json (which
-        would make write_json raise ValueError) or an unexpected
-        transport failure is caught and returned as None.
-      * DataHandle._from_raw is wrapped separately; if it raises, the
-        raw handle is freed defensively and None is returned.
-      * LF_SetPos and read_json are wrapped together. A malformed
-        response (invalid UTF-8 or unrepairable JSON) is caught and
-        returned as None.
-
-    The caller therefore has exactly one failure path to handle: the
-    function returned None. No JSON-related exception can propagate
-    out of this function and abort the REPL.
+        wrapped together.
+      * DataHandle._from_raw is wrapped separately.
+      * LF_SetPos and read_json are wrapped together.
     """
     hnd = None
     res_hnd = None
@@ -846,33 +689,6 @@ def fetch_capabilities(state: ClientState, server_app: str,
                        timeout_ms: int) -> bool:
     """
     Call the server's `get_api_capabilities` API and cache the result.
-
-    The response has the shape:
-
-        {
-          "code": 0,
-          "server_kind": "service" | "proxy",
-          "capabilities": {
-              "<api_name>": 0 | 1,
-              ...
-          }
-        }
-
-    On success, STATE.api_capabilities and STATE.server_kind are
-    updated. Returns True on success, False on transport or parse
-    failure.
-
-    Compatibility note: older servers (before the capability API was
-    introduced) will return an error. In that case this function
-    returns False and STATE.api_capabilities remains empty; callers
-    treat an empty cache as "unknown" and fall back to unconditional
-    invocation.
-
-    Normalization: each capability value is coerced to int 0 or 1.
-    Values that cannot be coerced (including OverflowError from
-    int(float('inf'))) are treated as 0 (unsupported), which is the
-    conservative choice. A malformed matrix therefore disables the
-    optional features rather than enabling them by accident.
     """
     resp = remote_call(server_app, "get_api_capabilities", {}, timeout_ms)
     if resp is None or resp.get("code") != 0:
@@ -880,20 +696,13 @@ def fetch_capabilities(state: ClientState, server_app: str,
     caps = resp.get("capabilities") or {}
     if not isinstance(caps, dict):
         return False
-    # Normalize values to ints so that later comparisons are cheap and
-    # unambiguous.
     normalized: Dict[str, int] = {}
     for k, v in caps.items():
         try:
             normalized[str(k)] = int(v)
         except (TypeError, ValueError, ArithmeticError):
-            # ArithmeticError covers OverflowError, which int() raises
-            # for float('inf') and float('nan'). Such a value is not a
-            # legitimate capability flag; treat it as unsupported.
             normalized[str(k)] = 0
 
-    # server_kind must be a string or absent. Anything else (a dict, a
-    # list, an int) would confuse the display code; normalize to None.
     raw_kind = resp.get("server_kind")
     state.server_kind = raw_kind if isinstance(raw_kind, str) else None
 
@@ -905,28 +714,13 @@ def llm_supported(state: ClientState, api_name: str,
                   server_app: str, timeout_ms: int) -> bool:
     """
     Return True if the running server supports the given API name.
-
-    Uses the cached capability matrix when possible. On a cache miss
-    (for example the first call before the matrix has been fetched,
-    or an API name that the server did not list), the matrix is
-    re-fetched once. If the re-fetch fails or still does not contain
-    the API, the function returns False.
-
-    A missing entry is treated as unsupported. This is the
-    conservative choice: do not invoke what the server has not
-    explicitly advertised. It matches the semantics of the server-side
-    capability dictionary, where only entries with value 1 are
-    supported.
     """
     if api_name in state.api_capabilities:
         return state.api_capabilities[api_name] == 1
 
-    # Cache miss: attempt one re-fetch, then look up again.
     if fetch_capabilities(state, server_app, timeout_ms):
         return state.api_capabilities.get(api_name, 0) == 1
 
-    # Could not fetch (old server, transport failure, ...). Be
-    # conservative and report unsupported.
     return False
 
 
@@ -943,20 +737,9 @@ def on_llm_stream(trigger, inp: DataHandle) -> None:
     error  -> record and print to stderr
     closed -> record session closure
 
-    The payload is read through lingofuse.lf_io.read_json, which
-    tolerates both NUL-terminated input (from NUL-terminating producers)
-    and raw input (from HTTP bridges). The handle position is rewound
-    to 0 before reading, matching the previous DataHandle.read_json()
-    behaviour.
-
-    Failure isolation (audit, unchanged)
-    ------------------------------------
-    The entire body is already wrapped in a try/except that sets
-    STATE.finish_event on any exception. A malformed notify payload
-    (invalid UTF-8, unrepairable JSON, missing fields) therefore
-    cannot leave the REPL waiting forever: the event fires, the
-    waiting thread wakes up, and the user sees a callback exception
-    message on stderr.
+    The entire body is wrapped in a try/except that sets
+    STATE.finish_event on any exception, so a malformed payload cannot
+    leave the REPL waiting forever.
     """
     try:
         if inp.get_size() == 0:
@@ -1009,12 +792,14 @@ def on_llm_stream(trigger, inp: DataHandle) -> None:
 # ----------------------------------------------------------------------
 def cmd_new(state: ClientState, server_app: str, timeout_ms: int,
             system_message: Optional[str] = None) -> None:
-    if not state.client_name:
-        print("[Client] Internal error: STATE.client_name is not set",
-              file=sys.stderr)
-        return
+    """
+    Create a new session.
 
-    payload: Dict[str, Any] = {"client_name": state.client_name}
+    The server learns the caller's UID from the Input handle. The
+    payload therefore carries no client identity. The server returns
+    the new session's `client_uid_hex` for the client's information.
+    """
+    payload: Dict[str, Any] = {}
     if system_message:
         payload["system_message"] = system_message
 
@@ -1023,8 +808,6 @@ def cmd_new(state: ClientState, server_app: str, timeout_ms: int,
         print(f"[Client] Failed to create session: {resp}", file=sys.stderr)
         return
 
-    # T2: safe extraction. A server that returns code 0 but omits
-    # session_id is reported as a failure rather than raising KeyError.
     new_sid = resp.get("session_id")
     if not new_sid or not isinstance(new_sid, str):
         print(f"[Client] Server did not return session_id: {resp}",
@@ -1032,8 +815,9 @@ def cmd_new(state: ClientState, server_app: str, timeout_ms: int,
         return
 
     state.current_session_id = new_sid
-    print(f"[Client] Created session {state.current_session_id} "
-          f"(client_name={state.client_name})")
+    uid_hex = resp.get("client_uid_hex", "?")
+    print(f"[Client] Created session {new_sid} "
+          f"(uid={uid_hex[:8]}...)")
 
 
 def cmd_use(state: ClientState, session_id: Optional[str]) -> None:
@@ -1045,10 +829,13 @@ def cmd_use(state: ClientState, session_id: Optional[str]) -> None:
 
 
 def cmd_sessions(state: ClientState, server_app: str, timeout_ms: int) -> None:
-    payload: Dict[str, Any] = {}
-    if state.client_name:
-        payload["client_name"] = state.client_name
-    resp = remote_call(server_app, "list_sessions", payload, timeout_ms)
+    """
+    List the sessions owned by this client.
+
+    The server implicitly filters by the caller's UID, so the client
+    only sees its own sessions. No filter is sent in the payload.
+    """
+    resp = remote_call(server_app, "list_sessions", {}, timeout_ms)
     if resp is None or resp.get("code") != 0:
         print(f"[Client] Failed to list sessions: {resp}", file=sys.stderr)
         return
@@ -1059,8 +846,6 @@ def cmd_sessions(state: ClientState, server_app: str, timeout_ms: int) -> None:
         print("[Client] No sessions on the server for this client.")
         return
     print(f"[Client] {len(sessions)} session(s):")
-    # T3: safe extraction for every field. A malformed session summary
-    # (missing or non-dict entry) is skipped rather than raising.
     for s in sessions:
         if not isinstance(s, dict):
             print(f"    (malformed session entry: {type(s).__name__})")
@@ -1068,8 +853,10 @@ def cmd_sessions(state: ClientState, server_app: str, timeout_ms: int) -> None:
         sid = s.get("session_id", "?")
         status = s.get("status", "?")
         count = s.get("message_count", "?")
+        uid_hex = s.get("client_uid_hex", "?")
         marker = " *" if sid == state.current_session_id else "  "
         print(f"  {marker} {sid}  "
+              f"uid={uid_hex[:8]}  "
               f"status={status}  "
               f"messages={count}")
 
@@ -1110,10 +897,8 @@ def cmd_sys(state: ClientState, message: str,
     Update the global default system message.
 
     This command relies on set_system_message, which is only available
-    on llm_service. On llm_proxy (stateless forwarder) the API is not
-    supported. The capability matrix is consulted first so that the
-    user receives a clear, actionable hint instead of a raw
-    "unsupported" error from the backend.
+    on llm_service. On llm_proxy / llm_proxy_tool the API is not
+    supported. The capability matrix is consulted first.
     """
     if not message:
         print("[Client] Usage: /sys <message>")
@@ -1123,7 +908,7 @@ def cmd_sys(state: ClientState, message: str,
         print("[Client] This server does not support set_system_message.")
         if state.server_kind:
             print(f"[Client]   Detected server kind: {state.server_kind}")
-        print("[Client]   Recommended workflow for llm_proxy:")
+        print("[Client]   Recommended workflow for proxy servers:")
         print("[Client]     1. /new                 "
               "(create a new session)")
         print("[Client]     2. Or launch llm_test with "
@@ -1148,12 +933,6 @@ def cmd_health(state: ClientState, server_app: str, timeout_ms: int) -> None:
         print("[Client] Health check failed.", file=sys.stderr)
         return
     print("[Client] Server health:")
-    # The api_capabilities field is a nested dict; flatten it into a
-    # single line so the output stays readable.
-    #
-    # T4: every capability name is coerced to str before the join.
-    # A server that returns a non-string key in the capability map
-    # (rare, but not impossible) would otherwise raise TypeError.
     for k, v in resp.items():
         if k == "api_capabilities" and isinstance(v, dict):
             supported = [str(n) for n, flag in v.items() if flag == 1]
@@ -1251,12 +1030,6 @@ def send_turn(state: ClientState, text: str,
     """
     Send one generate request and block until the server emits a
     finish event.
-
-    `attachments` is an optional list of dicts already built by
-    _build_attachments(). When None or empty, the payload is
-    byte-for-byte identical to the pre-v3.7 request, so the
-    interactive REPL and any script that does not use attachments are
-    unaffected by the new field.
     """
     if not state.current_session_id:
         print("[Client] No current session. Use /new to create one.")
@@ -1320,7 +1093,7 @@ def run_once(args: argparse.Namespace) -> int:
     if args.session_id:
         session_id = args.session_id
     else:
-        payload: Dict[str, Any] = {"client_name": STATE.client_name}
+        payload: Dict[str, Any] = {}
         if args.system_message:
             payload["system_message"] = args.system_message
         resp = remote_call(server_app, "create_session", payload, timeout_ms)
@@ -1329,14 +1102,15 @@ def run_once(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
 
-        # T2: safe extraction. See cmd_new for the same pattern.
         new_sid = resp.get("session_id")
         if not new_sid or not isinstance(new_sid, str):
             print(f"[Client] Server did not return session_id: {resp}",
                   file=sys.stderr)
             return 1
         session_id = new_sid
-        print(f"[Client] Created session {session_id}")
+        uid_hex = resp.get("client_uid_hex", "?")
+        print(f"[Client] Created session {session_id} "
+              f"(uid={uid_hex[:8]}...)")
 
     STATE.current_session_id = session_id
     STATE.thinking_enabled = args.thinking
@@ -1350,8 +1124,6 @@ def run_once(args: argparse.Namespace) -> int:
     try:
         attachments = _build_attachments(args)
     except (OSError, ValueError) as e:
-        # FileNotFoundError / IsADirectoryError / PermissionError are
-        # subclasses of OSError. ValueError covers the size checks.
         print(f"[Client] Failed to load attachments: {e}", file=sys.stderr)
         return 1
 
@@ -1392,6 +1164,25 @@ def main() -> int:
     LF_ResetPrepare()
     set_option("Wait_Connection_ReadyOk", "True")
 
+    # ------------------------------------------------------------------
+    # Register the notify API into the process-wide P2P namespace.
+    #
+    # v4.0 no longer creates a business App, so the notify API is
+    # registered directly. The framework will bind the process-global
+    # LF_P2P_APP to the network once the main thread starts, so the
+    # notify callback is reachable by UID-addressed sends from the
+    # server.
+    #
+    # Registration happens BEFORE LF_PrepareDone so that the API is
+    # ready from the moment the client becomes visible on the network.
+    # ------------------------------------------------------------------
+    print(f"[Client] Registering P2P notify API: {args.notify_api}")
+    register_p2p_notify(
+        args.notify_api,
+        on_llm_stream,
+        "LLM stream callback (v4.0 UID-addressed client)",
+    )
+
     ret = LF_PrepareClient(cstr(args.endpoint), None)
     if ret == -1:
         print(f"[Client] ERROR: LF_PrepareClient failed for "
@@ -1408,29 +1199,9 @@ def main() -> int:
             LF_Shutdown()
             return 1
 
-    print("[Client] Network connection established.")
-
-    client_name = generate_app_name()
-    STATE.client_name = client_name
-    print(f"[Client] Client app name: {client_name}")
-
-    app = App(client_name, "Interactive multi-session LLM client")
-    app.register_notify(args.notify_api, on_llm_stream)
-
-    bound = LF_BindApp(app.raw)
-    if bound == 0:
-        print("[Client] WARNING: LF_BindApp returned 0; the client may "
-              "not be reachable by the server.", file=sys.stderr)
-    else:
-        print(f"[Client] Bound to {bound} client(s).")
+    print("[Client] Network connection established (P2P notify mode).")
 
     # ---- Discover the server's API capability matrix (best-effort) ----
-    #
-    # This is an optional step: if the running server predates the
-    # capability API, fetch_capabilities returns False and the cache
-    # stays empty. Commands that consult llm_supported will then fall
-    # back to unconditional invocation, preserving backward
-    # compatibility.
     if fetch_capabilities(STATE, args.server_app, args.timeout):
         kind = STATE.server_kind or "unknown"
         supported = sum(1 for v in STATE.api_capabilities.values() if v == 1)
@@ -1447,10 +1218,6 @@ def main() -> int:
         #   * --content <TEXT>
         #   * --text <PATH>     (one or more)
         #   * --image <PATH>    (one or more)
-        # A pure-attachment invocation (no --content) is legitimate:
-        # the user may simply want to hand a file to the model and let
-        # it decide what to do. The requirement that at least one of
-        # content / text / image is present is enforced in run_once().
         if args.content is not None or args.text or args.image:
             rc = run_once(args)
             return rc
@@ -1512,10 +1279,8 @@ def main() -> int:
     finally:
         print()
         print("[Client] Shutting down...")
-        try:
-            app.free()
-        except Exception:
-            pass
+        # v4.0: no App to free; P2P registration is torn down by
+        # LF_Shutdown automatically.
         LF_ExitMainThread()
         LF_Shutdown()
         print("[Client] Done.")

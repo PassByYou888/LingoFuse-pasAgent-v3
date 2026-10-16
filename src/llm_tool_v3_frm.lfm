@@ -308,8 +308,6 @@ object llm_tool_v3_form: Tllm_tool_v3_form
         Top = 48
         Width = 150
         Caption = '启用 Structured Output'
-        Checked = True
-        State = cbChecked
         TabOrder = 0
       end
       object SchemaNameEdit: TLabeledEdit

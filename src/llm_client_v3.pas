@@ -1,11 +1,11 @@
 ﻿(*
  * =============================================================================
- * llm_client_v3 - Pascal client for LingoFuse LLM Service (v3.11)
+ * llm_client_v3 - Pascal client for LingoFuse LLM Service (v4.0)
  * =============================================================================
  *
  * High-level, event-driven Pascal client for a LingoFuse LLM service.
  * Speaks the structured streaming protocol defined by llm_service.py /
- * llm_proxy.py / llm_proxy_tool.py (v3.0 protocol and later).
+ * llm_proxy.py / llm_proxy_tool.py (v4.0 protocol).
  *
  * Three backends, one protocol
  * ----------------------------
@@ -22,8 +22,35 @@
  * methods behave identically EXCEPT SetSystemMessage, which is
  * unsupported on the two proxy siblings.
  *
- * v3.11 changes (JSON safety revision)
- * ------------------------------------
+ * v4.0 changes (UID-addressed streaming protocol)
+ * -----------------------------------------------
+ *   The client no longer generates an app name, no longer creates an
+ *   App, and no longer calls LF_BindApp. Instead, it registers the
+ *   notify API directly into the process-wide P2P namespace via
+ *   LF_Register_P2P_NotifyEx.
+ *
+ *   The LingoFuse framework injects the client's 32-byte session UID
+ *   into the header of every outbound request, so the server learns
+ *   the UID from the Input DataHandle of the client's first
+ *   CreateSession call. All stream events are then routed back via
+ *   LF_UID_Sequenced_Notify using that UID.
+ *
+ *   The `client_name` field is GONE from every request payload.
+ *   The server ignores it if a legacy client sends it.
+ *
+ *   This eliminates the previous dependency on LF_Generate_AppNameEx
+ *   and LF_CreateAppEx, which were fragile (they produced names like
+ *   `@__generate__@ipc:llm_service:0&...`) and required LF_BindApp to
+ *   attach the App to a client tunnel. The new P2P registration is
+ *   simpler, always unique to the process, and survives connection
+ *   re-establishment without re-binding.
+ *
+ *   The `ClientName` public property has been removed. Callers that
+ *   need to know the client's UID for logging or display should read
+ *   the `client_uid_hex` field from the CreateSession response.
+ *
+ * v3.11 changes (retained)
+ * ------------------------
  *   * ALL JSON parsing now goes through TZ_JsonObject.Parae(TBytes).
  *     ParseText(TZ_JsonString) is NEVER used, because it goes through
  *     a `string` (AnsiString on FPC) intermediate that can silently
@@ -88,7 +115,7 @@
  *
  * Notification threading
  * ----------------------
- * LF_RegisterNotifyEx registers a cdecl callback that fires on a
+ * LF_Register_P2P_NotifyEx registers a cdecl callback that fires on a
  * LingoFuse background notification thread. It is NOT marshalled to
  * the main thread automatically. Consumers that touch UI must marshal
  * themselves:
@@ -207,7 +234,14 @@ type
 
   TLLMClient = class
   private
-    FApp: TAppHnd;
+    (* ---- Network / lifecycle ---- *)
+    (*
+       v4.0: no FApp and no FClientName. The client registers the
+       notify API directly into the process-wide P2P namespace. The
+       server learns the client's UID from the Input handle of the
+       first CreateSession call; the client itself never sends an
+       identity.
+    *)
     FServerApp: string;
     FEndpoint: string;
     FTimeout: integer;
@@ -216,7 +250,6 @@ type
     FPrepared: boolean;
 
     FCurrentSessionId: string;
-    FClientName: string;
 
     FCapabilities: TZ_JsonObject;
     FCapabilitiesRawJson: TZ_JsonString;
@@ -382,7 +415,6 @@ type
     property OnClosed: TLLMClosedEvent read FOnClosed write FOnClosed;
 
     property CurrentSessionId: string read FCurrentSessionId write FCurrentSessionId;
-    property ClientName: string read FClientName;
     property Connected: boolean read FConnected;
     property ServerKind: string read FServerKind;
     property CapabilitiesRawJson: TZ_JsonString read FCapabilitiesRawJson;
@@ -890,6 +922,11 @@ end;
   the response_format on a STANDALONE root (joSchema), then appends
   the "options":{"response_format":<schemaJson>} fragment to the
   serialized request via string concatenation.
+
+  v4.0 note
+  ---------
+  No `client_name` field is emitted. The server learns the caller's
+  UID from the Input DataHandle.
   ---------------------------------------------------------------------------- *)
 
 function TLLMClient.SendGenerateCombined(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
@@ -936,6 +973,11 @@ begin
   end;
 
   // ---- Build the request ----
+  //
+  // v4.0: the `client_name` field is NOT emitted. The server learns
+  // the caller's UID from the Input DataHandle of this Call. When
+  // no session_id is supplied, the server creates a new session
+  // keyed on the caller's UID.
   joReq := TZ_JsonObject.Create;
   try
     joReq.S['content'] := AContent;
@@ -944,9 +986,7 @@ begin
     if ASessionId <> '' then
       joReq.S['session_id'] := ASessionId
     else if FCurrentSessionId <> '' then
-      joReq.S['session_id'] := FCurrentSessionId
-    else
-      joReq.S['client_name'] := FClientName;
+      joReq.S['session_id'] := FCurrentSessionId;
 
     if hasAttach then
     begin
@@ -1083,6 +1123,28 @@ end;
 
 (* ----------------------------------------------------------------------------
   Lifecycle
+
+  v4.0 lifecycle
+  --------------
+  Connect():
+      1. LF_ResetPrepare
+      2. LF_SetOptionEx('Wait_Connection_ReadyOk', 'True')
+      3. LF_SetOptionEx('Overlap_Connection', 'True')
+      4. LF_PrepareClientEx(endpoint, nil)
+      5. LF_PrepareDone
+      6. LF_Register_P2P_NotifyEx(API_NAME_STREAM, ..., Self, @_LLMNotifyDispatch)
+      7. Optional capability probe
+
+  Disconnect():
+      CleanupPartialConnect(True)
+          - LF_Unregister_P2PEx(API_NAME_STREAM)   (idempotent)
+          - LF_ExitMainThread
+          - ResetCapabilityState
+
+  Destructor:
+      Disconnect()
+      DisposeObjectAndNil(FCapabilities)
+      DisposeObjectAndNil(FLastException)
   ---------------------------------------------------------------------------- *)
 
 constructor TLLMClient.Create(const AServerApp, AEndpoint: string; ATimeout: integer);
@@ -1093,8 +1155,6 @@ begin
   FTimeout := ATimeout;
   FConnected := False;
   FPrepared := False;
-  FApp := nil;
-  FClientName := '';
   FCurrentSessionId := '';
   FCapabilities := nil;
   FCapabilitiesRawJson := '';
@@ -1119,14 +1179,13 @@ end;
 
 procedure TLLMClient.CleanupPartialConnect(AExitMainThread: boolean);
 begin
-  if FApp <> nil then
-  begin
-    try
-      LF_FreeApp(FApp);
-    except
-      (* Swallow so cleanup never masks the original error. *)
-    end;
-    FApp := nil;
+  (* v4.0: unregister the P2P notify API before leaving the LingoFuse
+     main thread. LF_Unregister_P2PEx is idempotent: it returns 0 when
+     the API is not registered, which is not an error. *)
+  try
+    LF_Unregister_P2PEx(API_NAME_STREAM);
+  except
+    (* Swallow so cleanup never masks the original error. *)
   end;
 
   if AExitMainThread and FPrepared then
@@ -1141,13 +1200,12 @@ begin
 
   FPrepared := False;
   FConnected := False;
-  FClientName := '';
   FCurrentSessionId := '';
 end;
 
 function TLLMClient.Connect(out ErrorMsg: string): boolean;
 var
-  regRet, bindRet: integer;
+  regRet: integer;
   capJson: TZ_JsonString;
   capErr: string;
 begin
@@ -1160,7 +1218,7 @@ begin
     Exit;
   end;
 
-  if FPrepared or (FApp <> nil) then
+  if FPrepared then
     CleanupPartialConnect(False);
 
   try
@@ -1185,34 +1243,20 @@ begin
     (* Main thread is now running: any failure must exit it. *)
     FPrepared := True;
 
-    FClientName := LF_Generate_AppNameEx();
-    if FClientName = '' then
-    begin
-      ErrorMsg := 'LF_Generate_AppNameEx returned an empty string';
-      CleanupPartialConnect(True);
-      Exit;
-    end;
-
-    FApp := LF_CreateAppEx(FClientName, 'Dynamic LLM Client (v3.11)');
-    if FApp = nil then
-    begin
-      ErrorMsg := 'LF_CreateAppEx returned nil';
-      CleanupPartialConnect(True);
-      Exit;
-    end;
-
-    regRet := LF_RegisterNotifyEx(FApp, API_NAME_STREAM, 'LLM stream callback', Pointer(Self), @_LLMNotifyDispatch);
+    (* v4.0: register the notify API into the process-wide P2P
+       namespace. No app is created and no bind is performed. The
+       framework injects the client's UID into every outbound request,
+       so the server learns the UID from the Input handle of the first
+       CreateSession call. *)
+    regRet := LF_Register_P2P_NotifyEx(
+      API_NAME_STREAM,
+      'LLM stream callback (v4.0 UID-addressed client)',
+      Pointer(Self),
+      @_LLMNotifyDispatch
+    );
     if regRet <> 1 then
     begin
-      ErrorMsg := 'Failed to register notify callback for "' + API_NAME_STREAM + '"';
-      CleanupPartialConnect(True);
-      Exit;
-    end;
-
-    bindRet := LF_BindApp(FApp);
-    if bindRet = 0 then
-    begin
-      ErrorMsg := 'LF_BindApp returned 0 - no free client available';
+      ErrorMsg := 'Failed to register P2P notify callback for "' + API_NAME_STREAM + '"';
       CleanupPartialConnect(True);
       Exit;
     end;
@@ -1223,7 +1267,7 @@ begin
     if not GetAPICapabilities(capJson, capErr) then
       LogInfo('Capability probe failed: ' + capErr);
 
-    LogInfo('Connected. ClientName=' + FClientName + ', ServerKind=' + FServerKind);
+    LogInfo('Connected (P2P UID mode). ServerKind=' + FServerKind);
 
     Result := True;
   except
@@ -1238,7 +1282,7 @@ end;
 
 procedure TLLMClient.Disconnect;
 begin
-  if not (FPrepared or FConnected or (FApp <> nil)) then
+  if not (FPrepared or FConnected) then
     Exit;
   LogInfo('Disconnecting');
   CleanupPartialConnect(True);
@@ -1365,9 +1409,10 @@ begin
   ASessionId := '';
   AError := '';
 
+  (* v4.0: no client_name. The server learns the caller's UID from
+     the Input DataHandle. *)
   joReq := TZ_JsonObject.Create;
   try
-    joReq.S['client_name'] := FClientName;
     if ASystemMessage <> '' then
       joReq.S['system_message'] := ASystemMessage;
     reqBytes := joReq.ToBytes;
@@ -1392,7 +1437,12 @@ begin
     end;
 
     FCurrentSessionId := ASessionId;
-    LogInfo('Session created: ' + ASessionId + ' (system_message=' + IntToStr(Length(ASystemMessage)) + ' chars)');
+
+    if joResp.Exists('client_uid_hex') then
+      LogInfo('Session created: ' + ASessionId + ' (uid=' + joResp.S['client_uid_hex'] + ', system_message=' + IntToStr(Length(ASystemMessage)) + ' chars)')
+    else
+      LogInfo('Session created: ' + ASessionId + ' (system_message=' + IntToStr(Length(ASystemMessage)) + ' chars)');
+
     Result := True;
   finally
     DisposeObject(joResp);
@@ -1486,9 +1536,10 @@ begin
   ASessionsJson := '';
   AError := '';
 
+  (* v4.0: no client_name filter. The server implicitly filters by
+     the caller's UID, so the client only sees its own sessions. *)
   joReq := TZ_JsonObject.Create;
   try
-    joReq.S['client_name'] := FClientName;
     reqBytes := joReq.ToBytes;
   finally
     DisposeObject(joReq);
@@ -1511,6 +1562,8 @@ end;
 
 (* ----------------------------------------------------------------------------
   Generate (no attachments)
+
+  v4.0: no client_name field.
   ---------------------------------------------------------------------------- *)
 
 function TLLMClient.Generate(const AContent, APrompt: string; var ASessionId: string; out AError: string): boolean;
@@ -1536,9 +1589,7 @@ begin
     if ASessionId <> '' then
       joReq.S['session_id'] := ASessionId
     else if FCurrentSessionId <> '' then
-      joReq.S['session_id'] := FCurrentSessionId
-    else
-      joReq.S['client_name'] := FClientName;
+      joReq.S['session_id'] := FCurrentSessionId;
 
     reqBytes := joReq.ToBytes;
   finally
@@ -1577,6 +1628,8 @@ end;
 
 (* ----------------------------------------------------------------------------
   Generate (with attachments)
+
+  v4.0: no client_name field.
   ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GenerateWithAttachments(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
@@ -1610,9 +1663,7 @@ begin
     if ASessionId <> '' then
       joReq.S['session_id'] := ASessionId
     else if FCurrentSessionId <> '' then
-      joReq.S['session_id'] := FCurrentSessionId
-    else
-      joReq.S['client_name'] := FClientName;
+      joReq.S['session_id'] := FCurrentSessionId;
 
     attachmentsArr := joReq.A['attachments'];
     PopulateAttachmentArray(ATexts, AImages, attachmentsArr, AError);
@@ -1798,6 +1849,8 @@ end;
   then appends the "options":{"response_format":<schemaJson>} fragment
   to the serialized request via string concatenation. This never
   touches any child node pointer.
+
+  v4.0: no client_name field.
   ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GenerateStructured(const AContent, APrompt: string; const AResponseFormatJsonBytes: TBytes;
@@ -1824,9 +1877,6 @@ begin
   end;
 
   // ---- Pre-parse response_format on a standalone root ----
-  // Never call Parae on a child of another TZ_JsonObject; doing so
-  // would free the child's underlying node and leave a dangling
-  // pointer in the parent.
   joSchema := TZ_JsonObject.Create;
   try
     if not joSchema.Parae(AResponseFormatJsonBytes) then
@@ -1848,18 +1898,13 @@ begin
     if ASessionId <> '' then
       joReq.S['session_id'] := ASessionId
     else if FCurrentSessionId <> '' then
-      joReq.S['session_id'] := FCurrentSessionId
-    else
-      joReq.S['client_name'] := FClientName;
+      joReq.S['session_id'] := FCurrentSessionId;
 
-    // Append "options":{"response_format":<schemaJsonStr>} via string
-    // concatenation. This avoids calling Parae on a child of joReq.
     reqJsonStr := joReq.ToJSONString(False).Text;
     if reqJsonStr = '{}' then
       reqJsonStr := '{"options":{"response_format":' + schemaJsonStr + '}}'
     else
     begin
-      // Strip the trailing '}' and append the options field.
       Delete(reqJsonStr, Length(reqJsonStr), 1);
       reqJsonStr := reqJsonStr + ',"options":{"response_format":' + schemaJsonStr + '}}';
     end;
@@ -1868,7 +1913,6 @@ begin
     DisposeObject(joReq);
   end;
 
-  // ---- Send the request and handle the response ----
   if not CallAPI(API_NAME_GENERATE, reqBytes, respBytes, AError) then
     Exit;
   if not SafeParseJson(respBytes, joResp, AError) then
@@ -1895,10 +1939,6 @@ begin
   end;
 end;
 
-(* Structured Output - string convenience overload.
-   The input must be a valid Unicode string. It is encoded to UTF-8
-   internally. Do NOT pass raw UTF-8 bytes mis-cast to AnsiString -
-   the result will be mangled. *)
 function TLLMClient.GenerateStructured(const AContent, APrompt: string; const AResponseFormatJson: string;
   var ASessionId: string; out AError: string): boolean;
 var
@@ -1907,10 +1947,6 @@ begin
   bytes := UnicodeStringToUtf8Bytes(AResponseFormatJson);
   Result := GenerateStructured(AContent, APrompt, bytes, ASessionId, AError);
 end;
-
-(* ----------------------------------------------------------------------------
-  Structured Output - schema-name + body + strict, byte-safe version
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GenerateWithJsonSchema(const AContent, APrompt: string; const ASchemaName: string;
   const ASchemaJsonBytes: TBytes; const AStrict: boolean; var ASessionId: string; out AError: string): boolean;
@@ -1926,7 +1962,6 @@ begin
   Result := GenerateStructured(AContent, APrompt, responseFormatBytes, ASessionId, AError);
 end;
 
-(* String convenience overload. *)
 function TLLMClient.GenerateWithJsonSchema(const AContent, APrompt: string; const ASchemaName: string;
   const ASchemaJson: string; const AStrict: boolean; var ASessionId: string; out AError: string): boolean;
 var
@@ -1935,10 +1970,6 @@ begin
   bytes := UnicodeStringToUtf8Bytes(ASchemaJson);
   Result := GenerateWithJsonSchema(AContent, APrompt, ASchemaName, bytes, AStrict, ASessionId, AError);
 end;
-
-(* ----------------------------------------------------------------------------
-  Structured Output + single image file, byte-safe version
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GenerateWithImageFileAndSchema(const AContent, APrompt, AFilePath: string; const ASchemaName: string;
   const ASchemaJsonBytes: TBytes; const AStrict: boolean; var ASessionId: string; out AError: string): boolean;
@@ -1972,7 +2003,6 @@ begin
   end;
 end;
 
-(* String convenience overload. *)
 function TLLMClient.GenerateWithImageFileAndSchema(const AContent, APrompt, AFilePath: string; const ASchemaName: string;
   const ASchemaJson: string; const AStrict: boolean; var ASessionId: string; out AError: string): boolean;
 var
@@ -1981,10 +2011,6 @@ begin
   bytes := UnicodeStringToUtf8Bytes(ASchemaJson);
   Result := GenerateWithImageFileAndSchema(AContent, APrompt, AFilePath, ASchemaName, bytes, AStrict, ASessionId, AError);
 end;
-
-(* ----------------------------------------------------------------------------
-  Structured Output + full attachment arrays, byte-safe version
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GenerateWithAttachmentsAndSchema(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
   const AImages: TLLMImageAttachmentArray; const ASchemaName: string; const ASchemaJsonBytes: TBytes; const AStrict: boolean;
@@ -2007,7 +2033,6 @@ begin
   Result := SendGenerateCombined(AContent, APrompt, ATexts, AImages, responseFormatBytes, ASessionId, AError);
 end;
 
-(* String convenience overload. *)
 function TLLMClient.GenerateWithAttachmentsAndSchema(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
   const AImages: TLLMImageAttachmentArray; const ASchemaName: string; const ASchemaJson: string; const AStrict: boolean;
   var ASessionId: string; out AError: string): boolean;
@@ -2017,10 +2042,6 @@ begin
   bytes := UnicodeStringToUtf8Bytes(ASchemaJson);
   Result := GenerateWithAttachmentsAndSchema(AContent, APrompt, ATexts, AImages, ASchemaName, bytes, AStrict, ASessionId, AError);
 end;
-
-(* ----------------------------------------------------------------------------
-  SetSystemMessage
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.SetSystemMessage(const AMessage: string; out AError: string): boolean;
 var
@@ -2065,10 +2086,6 @@ begin
     DisposeObject(joResp);
   end;
 end;
-
-(* ----------------------------------------------------------------------------
-  Health
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.Health(out AHealthJson, AError: string): boolean;
 var

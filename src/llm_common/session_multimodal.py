@@ -19,6 +19,13 @@ between plain text and multi-modal user messages: the base class
 already accepts `Any` for user content, and the tool-call logic is
 orthogonal to the content shape.
 
+UID-addressed routing
+---------------------
+Routing is inherited unchanged from SessionState: this class does not
+know or care about the routing key beyond passing `client_uid` up to
+the base constructor. See the `session_base` module docstring for the
+full UID contract.
+
 Message shapes
 --------------
 The messages list may contain any of:
@@ -108,19 +115,22 @@ class MultimodalSessionState(SessionState):
     are the two tool-message mutators and an override of
     `_trim_locked` that adds a character budget and the group
     invariant described in the module docstring.
+
+    The constructor forwards `client_uid` to SessionState. See the
+    `session_base` module docstring for the UID contract.
     """
 
     def __init__(
         self,
         session_id: str,
-        client_name: str,
+        client_uid: bytes,
         system_message: str = "",
         max_history: int = DEFAULT_MAX_HISTORY,
         max_history_chars: int = DEFAULT_MAX_HISTORY_CHARS,
     ) -> None:
         """
         Args:
-            session_id, client_name, system_message, max_history:
+            session_id, client_uid, system_message, max_history:
                 Forwarded to SessionState unchanged.
 
             max_history_chars:
@@ -130,7 +140,7 @@ class MultimodalSessionState(SessionState):
         """
         super().__init__(
             session_id=session_id,
-            client_name=client_name,
+            client_uid=client_uid,
             system_message=system_message,
             max_history=max_history,
         )

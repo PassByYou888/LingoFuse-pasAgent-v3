@@ -4,27 +4,26 @@ llm_common.session_base - Plain-text session state base class.
 
 A SessionState holds one ongoing conversation:
 
-  - a fixed `client_name` (destination for streaming notifications)
+  - a fixed 32-byte `client_uid` (routing key for streaming notifications)
   - a fixed `system_message` (snapshotted at creation time)
   - a message history that grows with each successful generation
   - status flags used by the request handler and the watchdog
 
-The base class is deliberately plain-text only. It knows nothing about
-tool calls, attachments, or multi-modal content. The two subclasses in
-the toolchain extend it:
+UID-addressed streaming protocol
+--------------------------------
+As of the current revision, every session is addressed by the CLIENT'S
+32-byte session UID rather than by an app name. The UID is injected by
+the framework into the header of every inbound request, so the server
+learns it from the Input DataHandle of the FIRST `create_session` or
+`generate` call, and refreshes it on every subsequent call (the UID is
+regenerated on every TunnelLink).
 
-  - llm_proxy.py uses SessionState directly (plain text proxy).
-  - llm_proxy_tool.py uses MultimodalSessionState (defined in
-    session_multimodal.py), which adds tool-call message methods and a
-    character-budget-aware trimming policy.
+The UID is a raw 32-byte value. The wire format used by
+`LF_UID_Sequenced_Notify` requires it as a `TP2P_UID` ctypes array;
+callers convert with `lingofuse.to_tp2p_uid`.
 
-  - llm_service.py currently keeps its OWN Session class because it
-    tracks a three-value `status` field ("idle" / "running" /
-    "closing") and a `current_cancel_event` alias. The compatibility
-    properties at the bottom of this class are RESERVED for a future
-    migration of llm_service to this base; they are documented but not
-    used by any code in the current codebase. Do not assume that
-    llm_service.Session is an alias of this class.
+There is no `client_name` field. App-name-addressed streaming is no
+longer supported by any server kind in this toolchain.
 
 Thread safety
 -------------
@@ -40,6 +39,10 @@ the methods keep `cancel_event` and `running` in sync.
 `touch()` is called by the request handler when a new `generate`
 arrives. The watchdog uses `last_active` to decide whether a session
 is idle.
+
+`update_client_uid()` refreshes the routing key on every inbound
+call, so a client that reconnects (and therefore gets a new UID from
+the framework) keeps receiving its stream events.
 
 This module has no dependencies on any other llm_common module.
 """
@@ -57,14 +60,18 @@ from typing import Any, Dict, List, Optional
 # be updated together, or better, they should import this constant.
 DEFAULT_MAX_HISTORY = 512
 
+#: Exact size of a LingoFuse session UID, in bytes. Matches the C ABI
+#: type `TP2P_UID___` (Pascal: `array[0..31] of Byte`).
+UID_BYTES = 32
+
 
 class SessionState:
     """
-    One persistent conversation, plain-text only.
+    One persistent conversation, addressed by the client's 32-byte UID.
 
     Attributes (all public, but treat as read-mostly):
         session_id      Unique ID assigned by the caller.
-        client_name     LingoFuse app name that receives notifications.
+        client_uid      32-byte bytes object, the routing key.
         system_message  Snapshot of the system prompt at creation.
         messages        List of OpenAI-format message dicts.
         created_at      Unix timestamp at construction.
@@ -79,31 +86,58 @@ class SessionState:
     def __init__(
         self,
         session_id: str,
-        client_name: str,
+        client_uid: bytes,
         system_message: str = "",
         max_history: int = DEFAULT_MAX_HISTORY,
     ) -> None:
         """
         Args:
-            session_id:      Unique ID assigned by the caller. The base
-                             class does not generate one; callers use
-                             uuid.uuid4() or an equivalent scheme.
-            client_name:     LingoFuse app name that receives streaming
-                             notifications for this session.
-            system_message:  System prompt for this session. Captured
-                             at construction and never changed. The
-                             empty string means "no system message".
-            max_history:     Maximum number of messages retained. The
-                             oldest messages are dropped first when
-                             the cap is exceeded. Negative values are
-                             clamped to 0 (which means "keep no
-                             history"), matching the historical
-                             behaviour of always treating the count as
-                             a non-negative limit.
+            session_id:
+                Unique ID assigned by the caller. The base class does
+                not generate one; callers use uuid.uuid4() or an
+                equivalent scheme.
+
+            client_uid:
+                The 32-byte LingoFuse session UID of the client that
+                owns this session. Required. Must be a bytes /
+                bytearray / memoryview of length exactly 32. The
+                session uses this UID as the destination of every
+                streaming notification.
+
+            system_message:
+                System prompt for this session. Captured at
+                construction and never changed. The empty string
+                means "no system message".
+
+            max_history:
+                Maximum number of messages retained. The oldest
+                messages are dropped first when the cap is exceeded.
+                Negative values are clamped to 0 (which means "keep
+                no history").
         """
+        # ---- Validate and normalise the UID ----
+        #
+        # We accept bytes / bytearray / memoryview at the boundary so
+        # that a caller coming from a `DataHandle.get_p2p_uid()`
+        # result or from a hex string round-trip does not have to
+        # convert twice. The stored field is always a plain immutable
+        # `bytes` object.
+        if not isinstance(client_uid, (bytes, bytearray, memoryview)):
+            raise TypeError(
+                f"client_uid must be bytes/bytearray/memoryview, "
+                f"got {type(client_uid).__name__}"
+            )
+        uid_bytes = bytes(client_uid)
+        if len(uid_bytes) != UID_BYTES:
+            raise ValueError(
+                f"client_uid must be exactly {UID_BYTES} bytes, "
+                f"got {len(uid_bytes)}"
+            )
+
         self.session_id = session_id
-        self.client_name = client_name
+        self.client_uid: bytes = uid_bytes
         self.system_message = system_message
+
         # Clamp: a negative max_history would otherwise translate into
         # an `excess` larger than the list length, silently wiping the
         # entire history on every append.
@@ -112,10 +146,9 @@ class SessionState:
         self.messages: List[Dict[str, Any]] = []
 
         # Wall-clock timestamps (seconds since the Unix epoch). This is
-        # the same unit used by llm_service.Session and by the
-        # list_sessions response shape, so that a client parsing the
-        # timestamps sees a consistent meaning across all three
-        # sibling services.
+        # the same unit used by the list_sessions response shape, so a
+        # client parsing the timestamps sees a consistent meaning
+        # across all three sibling services.
         self.created_at = time.time()
         self.last_active = self.created_at
 
@@ -123,6 +156,45 @@ class SessionState:
         self.running: bool = False
 
         self.lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # UID management
+    # ------------------------------------------------------------------
+
+    def update_client_uid(self, new_uid: bytes) -> None:
+        """
+        Refresh the session's routing key from the current inbound
+        call.
+
+        The LingoFuse session UID is regenerated on every TunnelLink,
+        so a client that reconnects after a network blip has a NEW
+        UID. Servers MUST call this method on every inbound `generate`
+        so that subsequent stream events reach the client at its
+        current address.
+
+        Args:
+            new_uid: The 32-byte UID observed on the current Input
+                     handle.
+
+        Raises:
+            TypeError / ValueError: if new_uid is not a 32-byte bytes
+                object. (The server code validates before calling, but
+                the check is repeated here so a future caller cannot
+                silently corrupt the session.)
+        """
+        if not isinstance(new_uid, (bytes, bytearray, memoryview)):
+            raise TypeError(
+                f"new_uid must be bytes/bytearray/memoryview, "
+                f"got {type(new_uid).__name__}"
+            )
+        uid_bytes = bytes(new_uid)
+        if len(uid_bytes) != UID_BYTES:
+            raise ValueError(
+                f"new_uid must be exactly {UID_BYTES} bytes, "
+                f"got {len(uid_bytes)}"
+            )
+        with self.lock:
+            self.client_uid = uid_bytes
 
     # ------------------------------------------------------------------
     # Message mutators
@@ -309,61 +381,28 @@ class SessionState:
 
             {
               "session_id":      "...",
-              "client_name":     "...",
+              "client_uid_hex":  "<64-char lowercase hex>",
               "created_at":      1234567890.123,
               "last_active_at":  1234567890.456,
               "status":          "running" | "idle",
               "message_count":   7,
             }
 
-        `last_active_at` and `status` are the field names historically
-        used by llm_service.py's list_sessions response, so the same
-        client code can parse responses from any server kind.
+        `client_uid_hex` is the 64-character lowercase hexadecimal
+        form of the 32-byte routing key. A client that wants to
+        compare against its own UID can do
+        ``my_uid.hex() == summary["client_uid_hex"]``.
 
         The timestamps are Unix wall-clock seconds (as returned by
-        time.time()), matching llm_service.Session. Clients that
-        format them for display get consistent output across all
-        three sibling services.
+        time.time()). Clients that format them for display get
+        consistent output across all three sibling services.
         """
         with self.lock:
             return {
                 "session_id": self.session_id,
-                "client_name": self.client_name,
+                "client_uid_hex": self.client_uid.hex(),
                 "created_at": self.created_at,
                 "last_active_at": self.last_active,
                 "status": "running" if self.running else "idle",
                 "message_count": len(self.messages),
             }
-
-    # ------------------------------------------------------------------
-    # Compatibility aliases (RESERVED - currently unused)
-    # ------------------------------------------------------------------
-    #
-    # These properties expose the same state under the historical field
-    # names used by llm_service.Session. They are read-only; writes go
-    # through the canonical fields (last_active / cancel_event) or
-    # through the lifecycle methods (begin_run / try_begin_run /
-    # end_run).
-    #
-    # They exist so that IF llm_service is ever migrated to this base
-    # class, its existing callers keep working without a rename pass.
-    # In the current codebase no caller uses them; treat them as
-    # reserved API and do not rely on them being removed.
-
-    @property
-    def last_active_at(self) -> float:
-        """
-        Read-only alias for `last_active`, matching llm_service's
-        historical field name. Reserved for a future migration; not
-        currently used by any caller.
-        """
-        return self.last_active
-
-    @property
-    def current_cancel_event(self) -> Optional[threading.Event]:
-        """
-        Read-only alias for `cancel_event`, matching llm_service's
-        historical field name. Reserved for a future migration; not
-        currently used by any caller.
-        """
-        return self.cancel_event
