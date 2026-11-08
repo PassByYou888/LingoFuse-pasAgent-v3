@@ -1,171 +1,4 @@
-﻿(*
- * =============================================================================
- * llm_client_v3 - Pascal client for LingoFuse LLM Service (v4.0)
- * =============================================================================
- *
- * High-level, event-driven Pascal client for a LingoFuse LLM service.
- * Speaks the structured streaming protocol defined by llm_service.py /
- * llm_proxy.py / llm_proxy_tool.py (v4.0 protocol).
- *
- * Three backends, one protocol
- * ----------------------------
- *   llm_service.py     (server_kind = "service")
- *       Local inference server (llama.cpp / transformers).
- *
- *   llm_proxy.py       (server_kind = "proxy")
- *       Stateless forwarder to an OpenAI-compatible HTTP backend.
- *
- *   llm_proxy_tool.py  (server_kind = "proxy", tools=1)
- *       Same as llm_proxy.py plus server-side MCP tool execution.
- *
- * This client transparently works against all three. All Call API
- * methods behave identically EXCEPT SetSystemMessage, which is
- * unsupported on the two proxy siblings.
- *
- * v4.0 changes (UID-addressed streaming protocol)
- * -----------------------------------------------
- *   The client no longer generates an app name, no longer creates an
- *   App, and no longer calls LF_BindApp. Instead, it registers the
- *   notify API directly into the process-wide P2P namespace via
- *   LF_Register_P2P_NotifyEx.
- *
- *   The LingoFuse framework injects the client's 32-byte session UID
- *   into the header of every outbound request, so the server learns
- *   the UID from the Input DataHandle of the client's first
- *   CreateSession call. All stream events are then routed back via
- *   LF_UID_Sequenced_Notify using that UID.
- *
- *   The `client_name` field is GONE from every request payload.
- *   The server ignores it if a legacy client sends it.
- *
- *   This eliminates the previous dependency on LF_Generate_AppNameEx
- *   and LF_CreateAppEx, which were fragile (they produced names like
- *   `@__generate__@ipc:llm_service:0&...`) and required LF_BindApp to
- *   attach the App to a client tunnel. The new P2P registration is
- *   simpler, always unique to the process, and survives connection
- *   re-establishment without re-binding.
- *
- *   The `ClientName` public property has been removed. Callers that
- *   need to know the client's UID for logging or display should read
- *   the `client_uid_hex` field from the CreateSession response.
- *
- * v3.11 changes (retained)
- * ------------------------
- *   * ALL JSON parsing now goes through TZ_JsonObject.Parae(TBytes).
- *     ParseText(TZ_JsonString) is NEVER used, because it goes through
- *     a `string` (AnsiString on FPC) intermediate that can silently
- *     mangle UTF-8 multi-byte sequences.
- *
- *   * Structured-Output entry points accept and return the schema /
- *     response_format as TBytes. Convenience string overloads are
- *     provided and are documented to accept only valid Unicode
- *     strings (never raw UTF-8 byte streams that were mis-cast to
- *     AnsiString).
- *
- *   * Every LingoFuse call goes through the LF_xxxEx helpers that are
- *     UTF-8 aware (LF_CreateDataEx, LF_CreateAppEx, LF_CallEx,
- *     LF_Generate_AppNameEx, LF_PrepareClientEx, LF_SetOptionEx,
- *     LF_RegisterNotifyEx, LF_GetStatusEx).
- *
- *   * All comments use  ... form. Braces are not used because
- *     they are error-prone inside JSON strings.
- *
- *   * All diagnostic messages are in English.
- *
- * Z.Json safety rule (applies to every function in this unit)
- * -----------------------------------------------------------
- *   Parae / Assign / LoadFromStream replace the receiver's FInstance.
- *   A TZ_JsonObject child's FInstance points into the parent's
- *   underlying JSON tree; replacing it would leave a dangling pointer
- *   in the parent. Therefore these three methods may ONLY be called
- *   on a root object (Parent = nil). To inject parsed JSON into a
- *   child node, parse on a standalone root, obtain the compact JSON
- *   string via ToJSONString(False), and concatenate it.
- *
- * Dependency policy
- * -----------------
- * This unit imports ONLY the low-level C ABI unit (lingofuse_import).
- * It does NOT import lingofuse_helper.
- *
- * Z framework API usage
- * ---------------------
- *   - TZ_JsonObject / TZ_JsonArray (Z.Json)
- *         Request construction and response parsing.
- *         Key contracts used here:
- *           * TZ_JsonObject.Create() is the ONLY way to make a root.
- *           * TZ_JsonArray must come from A[] / AddObject.
- *           * A[] / O[] auto-create on missing key; use Exists() to test.
- *           * S[] / I[] / B[] return defaults for missing keys.
- *           * Parae(TBytes) is the byte-safe parse entry.
- *           * ToBytes is the byte-safe emit entry.
- *
- *   - TZ_JsonString (Z.Json)
- *         Holds raw UTF-8 JSON payloads. On FPC this is a TUPascalString
- *         (UTF-16); on Delphi it is a TPascalString.
- *
- *   - TAtomVar<SystemString> (Z.Core)
- *         FLastException is written by the notify callback thread and
- *         read by arbitrary caller threads.
- *
- *   - DisposeObject / DisposeObjectAndNil (Z.Core)
- *         All object release. Never raises.
- *
- *   - DoStatus (Z.Status)
- *         Diagnostics only, and only from the caller thread.
- *
- * Notification threading
- * ----------------------
- * LF_Register_P2P_NotifyEx registers a cdecl callback that fires on a
- * LingoFuse background notification thread. It is NOT marshalled to
- * the main thread automatically. Consumers that touch UI must marshal
- * themselves:
- *
- *     procedure TForm1.Do_LLM_Chunk(const SessionId, Text: string);
- *     begin
- *       TThread.Queue(nil,
- *         procedure
- *         begin
- *           OutputMemo.Lines.Add(Text);
- *         end);
- *     end;
- *
- * Structured Output
- * -----------------
- * The client offers entry points that produce a `generate` request
- * carrying options.response_format:
- *
- *   GenerateStructured(content, prompt, responseFormatBytes,
- *                      sessionId, error) -> boolean
- *       Complete response_format as raw JSON bytes.
- *
- *   GenerateWithJsonSchema(content, prompt, schemaName, schemaBytes,
- *                          strict, sessionId, error) -> boolean
- *       Convenience wrapper; assembles the outer
- *       {"type":"json_schema","json_schema":{...}} envelope.
- *
- *   GenerateWithImageFileAndSchema(content, prompt, filePath,
- *                                  schemaName, schemaBytes, strict,
- *                                  sessionId, error) -> boolean
- *       Single image file + JSON Schema in one request.
- *
- *   GenerateWithAttachmentsAndSchema(content, prompt, texts, images,
- *                                    schemaName, schemaBytes, strict,
- *                                    sessionId, error) -> boolean
- *       Full attachment arrays + JSON Schema in one request.
- *
- * Every method also has a `string` convenience overload. The string
- * overloads assume the input is a valid Unicode string and encode it
- * to UTF-8 internally via TEncoding.UTF8. Passing raw UTF-8 bytes
- * mis-cast to AnsiString is undefined behaviour.
- *
- * Structured Output works against llm_proxy and llm_proxy_tool. It
- * does NOT work against llm_service (local llama.cpp path).
- *
- * Author: LingoFuse-pasAgent project
- * =============================================================================
- *)
-
-unit llm_client_v3;
+﻿unit llm_client_v3;
 
 {$DEFINE FPC_DELPHI_MODE}
 {$I ..\zCore\src\Z.Define.inc}
@@ -188,7 +21,6 @@ var
   API_NAME_GET_CAPABILITIES: string = 'get_api_capabilities';
   API_NAME_HEALTH: string = 'health';
 
-  (* Attachment limits, mirroring llm_common/attachments.py. *)
   ATTACHMENT_MAX_TEXT_BYTES_PER_FILE: integer = 256 * 1024;
   ATTACHMENT_MAX_TEXT_BYTES_TOTAL: integer = 512 * 1024;
   ATTACHMENT_MAX_IMAGE_B64_PER_FILE: integer = 8 * 1024 * 1024;
@@ -210,13 +42,6 @@ type
   TLLMErrorEvent = procedure(const SessionId, ErrorMsg: string) of object;
   TLLMClosedEvent = procedure(const SessionId, Reason: string) of object;
 
-  (* Attachment records.
-     All fields use TZ_JsonString instead of plain `string`. This
-     makes explicit release semantics reliable across compilers:
-     the record's internal buffer is a managed dynamic array and is
-     freed either automatically when the containing array goes out
-     of scope or explicitly via ClearTextAttachments /
-     ClearImageAttachments. *)
   TLLMTextAttachment = record
     Name: TZ_JsonString;
     Mime: TZ_JsonString;
@@ -234,14 +59,6 @@ type
 
   TLLMClient = class
   private
-    (* ---- Network / lifecycle ---- *)
-    (*
-       v4.0: no FApp and no FClientName. The client registers the
-       notify API directly into the process-wide P2P namespace. The
-       server learns the client's UID from the Input handle of the
-       first CreateSession call; the client itself never sends an
-       identity.
-    *)
     FServerApp: string;
     FEndpoint: string;
     FTimeout: integer;
@@ -255,7 +72,6 @@ type
     FCapabilitiesRawJson: TZ_JsonString;
     FServerKind: string;
 
-    (* Written by the notify thread, read by anyone. *)
     FLastException: TAtomString;
 
     FOnChunk: TLLMChunkEvent;
@@ -285,35 +101,12 @@ type
     class procedure PopulateAttachmentArray(const ATexts: TLLMTextAttachmentArray; const AImages: TLLMImageAttachmentArray;
       const AArray: TZ_JsonArray; out AError: string); static;
 
-    (* Reads an image file into a TLLMImageAttachment record.
-       Detects the MIME type from the extension, reads the raw
-       bytes, base64 encodes them, and fills Name / Mime / DataB64.
-       Returns False and sets AError on any failure. *)
     class function BuildImageAttachmentFromFile(const AFilePath: string; out AImage: TLLMImageAttachment;
       out AError: string): boolean; static;
 
-    (* Assembles the outer response_format envelope from a caller-
-       supplied schema name / body / strict flag, and returns it as
-       raw UTF-8 bytes ready to be embedded into
-       options.response_format.
-
-       Z.Json safety: the schema body is parsed on a STANDALONE root
-       (joSchema), then its compact JSON string is concatenated with
-       a separately built name/strict fragment. Parae is never
-       called on a child of another TZ_JsonObject. *)
     class function BuildSchemaResponseFormatJson(const ASchemaName: string; const ASchemaJsonBytes: TBytes;
       const AStrict: boolean; out AResponseFormatJsonBytes: TBytes; out AError: string): boolean; static;
 
-    (* Unified generate request sender. Supports all four
-       combinations of {attachments present / absent} x
-       {response_format present / absent}.
-
-       An empty AResponseFormatJsonBytes means "no response_format".
-
-       Z.Json safety: the response_format bytes are parsed on a
-       STANDALONE root (joSchema). The resulting compact JSON string
-       is appended to the serialized request via string
-       concatenation, so we never call Parae on a child of joReq. *)
     function SendGenerateCombined(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
       const AImages: TLLMImageAttachmentArray; const AResponseFormatJsonBytes: TBytes; var ASessionId: string;
       out AError: string): boolean;
@@ -324,14 +117,12 @@ type
     function Connect(out ErrorMsg: string): boolean;
     procedure Disconnect;
 
-    (* Session management *)
     function CreateSession(out ASessionId, AError: string): boolean; overload;
     function CreateSession(const ASystemMessage: string; out ASessionId, AError: string): boolean; overload;
     function CloseSession(const ASessionId: string; ACancelRunning: boolean; out AError: string): boolean;
     function CancelSession(const ASessionId: string; out AError: string): boolean;
     function ListSessions(out ASessionsJson, AError: string): boolean;
 
-    (* Generation *)
     function Generate(const AContent, APrompt: string; var ASessionId: string; out AError: string): boolean;
 
     function GenerateWithAttachments(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
@@ -343,58 +134,35 @@ type
 
     function GenerateCurrent(const AContent, APrompt: string; out AError: string): boolean;
 
-    (* Structured Output - byte-safe primary interface.
-       GenerateStructured accepts a complete response_format
-       object as raw JSON bytes and forwards it to the proxy.
-
-       Z.Json safety: the response_format bytes are parsed on a
-       STANDALONE root (joSchema), then appended to the serialized
-       request via string concatenation. Parae is never called on a
-       child of joReq. *)
     function GenerateStructured(const AContent, APrompt: string; const AResponseFormatJsonBytes: TBytes;
       var ASessionId: string; out AError: string): boolean; overload;
 
-    (* Structured Output - string convenience overload.
-       The input must be a valid Unicode string. It is encoded to
-       UTF-8 internally. Do NOT pass raw UTF-8 bytes mis-cast to
-       AnsiString - the result will be mangled. *)
     function GenerateStructured(const AContent, APrompt: string; const AResponseFormatJson: string;
       var ASessionId: string; out AError: string): boolean; overload;
 
-    (* Convenience wrapper that assembles the outer response_format
-       envelope around a caller-supplied JSON Schema body.
-       Byte-safe primary interface. *)
     function GenerateWithJsonSchema(const AContent, APrompt: string; const ASchemaName: string;
       const ASchemaJsonBytes: TBytes; const AStrict: boolean; var ASessionId: string; out AError: string): boolean; overload;
 
-    (* String convenience overload for GenerateWithJsonSchema. *)
     function GenerateWithJsonSchema(const AContent, APrompt: string; const ASchemaName: string;
       const ASchemaJson: string; const AStrict: boolean; var ASessionId: string; out AError: string): boolean; overload;
 
-    (* Single image file + JSON Schema in one request.
-       Recommended entry point for a detector-style call. *)
     function GenerateWithImageFileAndSchema(const AContent, APrompt, AFilePath: string; const ASchemaName: string;
       const ASchemaJsonBytes: TBytes; const AStrict: boolean; var ASessionId: string; out AError: string): boolean; overload;
 
-    (* String convenience overload. *)
     function GenerateWithImageFileAndSchema(const AContent, APrompt, AFilePath: string; const ASchemaName: string;
       const ASchemaJson: string; const AStrict: boolean; var ASessionId: string; out AError: string): boolean; overload;
 
-    (* Full attachment arrays + JSON Schema in one request. *)
     function GenerateWithAttachmentsAndSchema(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
       const AImages: TLLMImageAttachmentArray; const ASchemaName: string; const ASchemaJsonBytes: TBytes;
       const AStrict: boolean; var ASessionId: string; out AError: string): boolean; overload;
 
-    (* String convenience overload. *)
     function GenerateWithAttachmentsAndSchema(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
       const AImages: TLLMImageAttachmentArray; const ASchemaName: string; const ASchemaJson: string;
       const AStrict: boolean; var ASessionId: string; out AError: string): boolean; overload;
 
-    (* Server-wide settings *)
     function SetSystemMessage(const AMessage: string; out AError: string): boolean;
     function Health(out AHealthJson, AError: string): boolean;
 
-    (* Capability discovery *)
     function GetAPICapabilities(var ACapabilitiesJson: TZ_JsonString; out AError: string): boolean;
     function HasCapabilityInfo: boolean;
     function LLMSupported(const AAPIName: string): boolean;
@@ -402,9 +170,6 @@ type
     function HasVision: boolean;
     function HasAttachments: boolean;
 
-    (* Explicit release helpers for the attachment arrays.
-       Deterministic release regardless of compiler-specific
-       dynamic-array finalization behaviour. *)
     class procedure ClearTextAttachments(var A: TLLMTextAttachmentArray); static;
     class procedure ClearImageAttachments(var A: TLLMImageAttachmentArray); static;
 
@@ -423,19 +188,11 @@ type
 
 implementation
 
-(* ----------------------------------------------------------------------------
-  Module-local helpers
-  ---------------------------------------------------------------------------- *)
-
 procedure LogInfo(const Msg: string);
 begin
   DoStatus(LOG_PREFIX_LLM_CLIENT + Msg);
 end;
 
-(* Convert a Unicode string to UTF-8 bytes.
-   This is the ONLY place where a `string` is converted to bytes.
-   Callers of the string-based overloads must pass a valid Unicode
-   string, never raw UTF-8 bytes that were mis-cast to AnsiString. *)
 function UnicodeStringToUtf8Bytes(const S: string): TBytes;
 begin
   if S = '' then
@@ -444,26 +201,12 @@ begin
     Result := TEncoding.UTF8.GetBytes(S);
 end;
 
-(* cdecl notify dispatcher. lingofuse_import's notify callbacks are
-   free procedures, not of-object methods; we register Self as Trigger
-   and bounce through this trampoline. *)
 procedure _LLMNotifyDispatch(Trigger: Pointer; Input_: TDataHnd); cdecl;
 begin
   if Trigger = nil then
     Exit;
   TLLMClient(Trigger).HandleLLMNotify(Input_);
 end;
-
-(* ----------------------------------------------------------------------------
-  TLLMClient.SafeParseJson - byte-safe JSON parsing.
-
-  This is the ONLY function in the unit that parses JSON, and it
-  goes through TZ_JsonObject.Parae(TBytes). ParseText is never used.
-
-  Contract:
-    * Success: AJson <> nil, returns True.
-    * Failure: AJson = nil, returns False, AError is non-empty.
-  ---------------------------------------------------------------------------- *)
 
 class function TLLMClient.SafeParseJson(const ARawBytes: TBytes; out AJson: TZ_JsonObject; out AError: string): boolean;
 begin
@@ -505,13 +248,6 @@ begin
   end;
 end;
 
-(* ----------------------------------------------------------------------------
-  TLLMClient.CheckResponseCode
-
-  Every server response uses the envelope:
-      { "code": 0, "error": "..." (on failure), <payload> }
-  ---------------------------------------------------------------------------- *)
-
 class function TLLMClient.CheckResponseCode(const AJson: TZ_JsonObject; const APIName: string; out AError: string): boolean;
 begin
   Result := False;
@@ -534,14 +270,6 @@ begin
 
   Result := True;
 end;
-
-(* ----------------------------------------------------------------------------
-  TLLMClient.ClearTextAttachments / ClearImageAttachments
-
-  Explicit release helpers for the attachment arrays. Each element is
-  cleared field-by-field first, then the array itself is reset to
-  length 0.
-  ---------------------------------------------------------------------------- *)
 
 class procedure TLLMClient.ClearTextAttachments(var A: TLLMTextAttachmentArray);
 var
@@ -569,18 +297,6 @@ begin
   SetLength(A, 0);
 end;
 
-(* ----------------------------------------------------------------------------
-  TLLMClient.PopulateAttachmentArray
-
-  Validates every attachment against the size limits and emits the
-  JSON array entries. Any violation aborts before any field is
-  written.
-
-  Z.Json safety: every entry is a freshly added child of AArray, and
-  only field-level APIs (S[...]) are used. No Parae or Assign is ever
-  called on a child object.
-  ---------------------------------------------------------------------------- *)
-
 class procedure TLLMClient.PopulateAttachmentArray(const ATexts: TLLMTextAttachmentArray; const AImages: TLLMImageAttachmentArray;
   const AArray: TZ_JsonArray; out AError: string);
 var
@@ -597,8 +313,6 @@ begin
     AError := 'PopulateAttachmentArray: nil target array';
     Exit;
   end;
-
-  (* Pre-flight: validate all sizes before touching the array. *)
 
   totalText := 0;
   for i := 0 to Length(ATexts) - 1 do
@@ -652,7 +366,6 @@ begin
     Exit;
   end;
 
-  (* Emit text entries. *)
   for i := 0 to Length(ATexts) - 1 do
   begin
     if ATexts[i].Name.Len = 0 then
@@ -674,7 +387,6 @@ begin
     obj.S['text'] := ATexts[i].Text.Text;
   end;
 
-  (* Emit image entries. *)
   for i := 0 to Length(AImages) - 1 do
   begin
     if AImages[i].Name.Len = 0 then
@@ -696,19 +408,6 @@ begin
     obj.S['data_b64'] := AImages[i].DataB64.Text;
   end;
 end;
-
-(* ----------------------------------------------------------------------------
-  TLLMClient.BuildImageAttachmentFromFile
-
-  Reads an image file into a TLLMImageAttachment record:
-      Name    <- ExtractFileName(AFilePath)
-      Mime    <- extension-based guess (png/jpeg/webp, default png)
-      DataB64 <- base64 of the raw bytes
-
-  umlBase64EncodeBytes consumes its source TBytes as a zero-copy
-  optimization; the local rawBytes is therefore NOT reused after the
-  call.
-  ---------------------------------------------------------------------------- *)
 
 class function TLLMClient.BuildImageAttachmentFromFile(const AFilePath: string; out AImage: TLLMImageAttachment; out AError: string): boolean;
 var
@@ -799,41 +498,6 @@ begin
   Result := True;
 end;
 
-(* ----------------------------------------------------------------------------
-  TLLMClient.BuildSchemaResponseFormatJson - byte-safe version.
-
-  Assembles the outer response_format envelope:
-
-      {
-        "type": "json_schema",
-        "json_schema": {
-          "name":   <ASchemaName>,
-          "strict": <AStrict>,
-          "schema": <parsed ASchemaJsonBytes>
-        }
-      }
-
-  and returns it as raw UTF-8 bytes.
-
-  Z.Json safety notes
-  -------------------
-  The original implementation tried to call Parae on a child object:
-
-      joJsonSchema := joRoot.O['json_schema'];
-      joJsonSchema.O['schema'].Parae(ASchemaJsonBytes);   // BROKEN
-
-  A child's FInstance points into the parent's underlying JSON tree.
-  Parae frees that node and creates a detached replacement, leaving a
-  dangling pointer in the parent and causing ToBytes to crash or to
-  silently drop the schema field.
-
-  The fix parses the schema body on a STANDALONE root (joSchema),
-  then concatenates its compact JSON string with a separately built
-  name/strict fragment.
-
-  Empty inputs and invalid schema bytes are rejected up front.
-  ---------------------------------------------------------------------------- *)
-
 class function TLLMClient.BuildSchemaResponseFormatJson(const ASchemaName: string; const ASchemaJsonBytes: TBytes;
   const AStrict: boolean; out AResponseFormatJsonBytes: TBytes; out AError: string): boolean;
 var
@@ -856,12 +520,6 @@ begin
     Exit;
   end;
 
-  // ---- Step 1: parse the schema bytes on a standalone root object ----
-  // Never call Parae on a child of another TZ_JsonObject: the child's
-  // FInstance points into the parent's underlying JSON tree, and Parae
-  // would free that node and create a detached replacement, leaving a
-  // dangling pointer in the parent and causing ToBytes to crash or to
-  // silently drop the schema field.
   joSchema := TZ_JsonObject.Create;
   try
     if not joSchema.Parae(ASchemaJsonBytes) then
@@ -874,7 +532,6 @@ begin
     DisposeObject(joSchema);
   end;
 
-  // ---- Step 2: build the name/strict fragment with proper escaping ----
   joNameStrict := TZ_JsonObject.Create;
   try
     joNameStrict.S['name'] := ASchemaName;
@@ -884,8 +541,6 @@ begin
     DisposeObject(joNameStrict);
   end;
 
-  // nameStrictJson looks like {"name":"...","strict":true}.
-  // Strip the trailing '}' so we can append ,"schema":<schemaJson>.
   if (nameStrictJson = '') or (nameStrictJson[Length(nameStrictJson)] <> '}') then
   begin
     AError := 'BuildSchemaResponseFormatJson: internal error building name/strict JSON';
@@ -894,40 +549,11 @@ begin
   Delete(nameStrictJson, Length(nameStrictJson), 1);
   nameStrictJson := nameStrictJson + ',"schema":' + schemaJson + '}';
 
-  // ---- Step 3: assemble the outer response_format envelope ----
   envelopeJson := '{"type":"json_schema","json_schema":' + nameStrictJson + '}';
 
   AResponseFormatJsonBytes := TEncoding.UTF8.GetBytes(envelopeJson);
   Result := True;
 end;
-
-(* ----------------------------------------------------------------------------
-  TLLMClient.SendGenerateCombined
-
-  Unified request sender for the combined Structured Output methods.
-  Handles all four combinations of {attachments present / absent} x
-  {response_format present / absent}.
-
-  An empty AResponseFormatJsonBytes means "no response_format".
-  Any non-empty value must already be a valid JSON byte stream.
-
-  Z.Json safety notes
-  -------------------
-  The original implementation called Parae on a grandchild of joReq:
-
-      joResponseFormat := joReq.O['options'].O['response_format'];
-      joResponseFormat.Parae(AResponseFormatJsonBytes);   // BROKEN
-
-  Same corruption as in BuildSchemaResponseFormatJson. The fix parses
-  the response_format on a STANDALONE root (joSchema), then appends
-  the "options":{"response_format":<schemaJson>} fragment to the
-  serialized request via string concatenation.
-
-  v4.0 note
-  ---------
-  No `client_name` field is emitted. The server learns the caller's
-  UID from the Input DataHandle.
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.SendGenerateCombined(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
   const AImages: TLLMImageAttachmentArray; const AResponseFormatJsonBytes: TBytes; var ASessionId: string; out AError: string): boolean;
@@ -952,10 +578,6 @@ begin
   hasAttach := (Length(ATexts) > 0) or (Length(AImages) > 0);
   hasSchema := Length(AResponseFormatJsonBytes) > 0;
 
-  // ---- Pre-parse response_format on a standalone root ----
-  // Never call Parae on a child of another TZ_JsonObject; doing so
-  // would free the child's underlying node and leave a dangling
-  // pointer in the parent.
   schemaJsonStr := '';
   if hasSchema then
   begin
@@ -972,12 +594,6 @@ begin
     end;
   end;
 
-  // ---- Build the request ----
-  //
-  // v4.0: the `client_name` field is NOT emitted. The server learns
-  // the caller's UID from the Input DataHandle of this Call. When
-  // no session_id is supplied, the server creates a new session
-  // keyed on the caller's UID.
   joReq := TZ_JsonObject.Create;
   try
     joReq.S['content'] := AContent;
@@ -998,14 +614,11 @@ begin
 
     if hasSchema then
     begin
-      // Append "options":{"response_format":<schemaJsonStr>} via string
-      // concatenation. This avoids calling Parae on a child of joReq.
       reqJsonStr := joReq.ToJSONString(False).Text;
       if reqJsonStr = '{}' then
         reqJsonStr := '{"options":{"response_format":' + schemaJsonStr + '}}'
       else
       begin
-        // Strip the trailing '}' and append the options field.
         Delete(reqJsonStr, Length(reqJsonStr), 1);
         reqJsonStr := reqJsonStr + ',"options":{"response_format":' + schemaJsonStr + '}}';
       end;
@@ -1017,7 +630,6 @@ begin
     DisposeObject(joReq);
   end;
 
-  // ---- Send the request and handle the response ----
   if not CallAPI(API_NAME_GENERATE, reqBytes, respBytes, AError) then
     Exit;
   if not SafeParseJson(respBytes, joResp, AError) then
@@ -1045,18 +657,6 @@ begin
     DisposeObject(joResp);
   end;
 end;
-
-(* ----------------------------------------------------------------------------
-  TLLMClient.CallAPI
-
-  Wraps the "send request bytes, receive response bytes" pattern using
-  the Ex helpers from lingofuse_import:
-      LF_CreateDataEx      UTF-8 aware handle creation
-      LF_WriteStringBytes  payload + trailing NUL
-      LF_CallEx            UTF-8 aware remote call
-      LF_ReadStringBytes   NUL-terminated, fault-tolerant read
-      LF_FreeData          release
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.CallAPI(const APIName: string; const RequestBytes: TBytes; out ResponseBytes: TBytes; out AError: string): boolean;
 var
@@ -1121,32 +721,6 @@ begin
   end;
 end;
 
-(* ----------------------------------------------------------------------------
-  Lifecycle
-
-  v4.0 lifecycle
-  --------------
-  Connect():
-      1. LF_ResetPrepare
-      2. LF_SetOptionEx('Wait_Connection_ReadyOk', 'True')
-      3. LF_SetOptionEx('Overlap_Connection', 'True')
-      4. LF_PrepareClientEx(endpoint, nil)
-      5. LF_PrepareDone
-      6. LF_Register_P2P_NotifyEx(API_NAME_STREAM, ..., Self, @_LLMNotifyDispatch)
-      7. Optional capability probe
-
-  Disconnect():
-      CleanupPartialConnect(True)
-          - LF_Unregister_P2PEx(API_NAME_STREAM)   (idempotent)
-          - LF_ExitMainThread
-          - ResetCapabilityState
-
-  Destructor:
-      Disconnect()
-      DisposeObjectAndNil(FCapabilities)
-      DisposeObjectAndNil(FLastException)
-  ---------------------------------------------------------------------------- *)
-
 constructor TLLMClient.Create(const AServerApp, AEndpoint: string; ATimeout: integer);
 begin
   inherited Create;
@@ -1179,13 +753,9 @@ end;
 
 procedure TLLMClient.CleanupPartialConnect(AExitMainThread: boolean);
 begin
-  (* v4.0: unregister the P2P notify API before leaving the LingoFuse
-     main thread. LF_Unregister_P2PEx is idempotent: it returns 0 when
-     the API is not registered, which is not an error. *)
   try
     LF_Unregister_P2PEx(API_NAME_STREAM);
   except
-    (* Swallow so cleanup never masks the original error. *)
   end;
 
   if AExitMainThread and FPrepared then
@@ -1226,6 +796,19 @@ begin
     LF_SetOptionEx('Wait_Connection_ReadyOk', 'True');
     LF_SetOptionEx('Overlap_Connection', 'True');
 
+    regRet := LF_Register_P2P_NotifyEx(
+      API_NAME_STREAM,
+      'LLM stream callback (v4.0 UID-addressed client)',
+      Pointer(Self),
+      @_LLMNotifyDispatch
+    );
+    if regRet <> 1 then
+    begin
+      ErrorMsg := 'Failed to register P2P notify callback for "' + API_NAME_STREAM + '"';
+      CleanupPartialConnect(False);
+      Exit;
+    end;
+
     if LF_PrepareClientEx(FEndpoint, nil) = -1 then
     begin
       ErrorMsg := 'LF_PrepareClientEx failed (address invalid or already in use)';
@@ -1240,30 +823,9 @@ begin
       Exit;
     end;
 
-    (* Main thread is now running: any failure must exit it. *)
     FPrepared := True;
-
-    (* v4.0: register the notify API into the process-wide P2P
-       namespace. No app is created and no bind is performed. The
-       framework injects the client's UID into every outbound request,
-       so the server learns the UID from the Input handle of the first
-       CreateSession call. *)
-    regRet := LF_Register_P2P_NotifyEx(
-      API_NAME_STREAM,
-      'LLM stream callback (v4.0 UID-addressed client)',
-      Pointer(Self),
-      @_LLMNotifyDispatch
-    );
-    if regRet <> 1 then
-    begin
-      ErrorMsg := 'Failed to register P2P notify callback for "' + API_NAME_STREAM + '"';
-      CleanupPartialConnect(True);
-      Exit;
-    end;
-
     FConnected := True;
 
-    (* Best-effort capability probe. Failure is logged, not fatal. *)
     if not GetAPICapabilities(capJson, capErr) then
       LogInfo('Capability probe failed: ' + capErr);
 
@@ -1288,10 +850,6 @@ begin
   CleanupPartialConnect(True);
 end;
 
-(* ----------------------------------------------------------------------------
-  Notify handler (runs on the LingoFuse notification thread)
-  ---------------------------------------------------------------------------- *)
-
 procedure TLLMClient.HandleLLMNotify(Input_: TDataHnd);
 var
   jsBytes: TBytes;
@@ -1306,15 +864,12 @@ begin
     if LF_GetSize(Input_) <= 0 then
       Exit;
 
-    (* Byte-safe read: LF_ReadStringBytes is NUL-terminated if present,
-       otherwise reads the entire remaining buffer. *)
     jsBytes := LF_ReadStringBytes(Input_);
     if Length(jsBytes) = 0 then
       Exit;
 
     jo := TZ_JsonObject.Create;
     try
-      (* Byte-safe parse: Parae, never ParseText. jo is a root. *)
       if not jo.Parae(jsBytes) then
         Exit;
       if not jo.Exists('type') then
@@ -1391,10 +946,6 @@ begin
   if Assigned(FOnClosed) then FOnClosed(SessionId, Reason);
 end;
 
-(* ----------------------------------------------------------------------------
-  Session management
-  ---------------------------------------------------------------------------- *)
-
 function TLLMClient.CreateSession(out ASessionId, AError: string): boolean;
 begin
   Result := CreateSession('', ASessionId, AError);
@@ -1409,8 +960,6 @@ begin
   ASessionId := '';
   AError := '';
 
-  (* v4.0: no client_name. The server learns the caller's UID from
-     the Input DataHandle. *)
   joReq := TZ_JsonObject.Create;
   try
     if ASystemMessage <> '' then
@@ -1536,8 +1085,6 @@ begin
   ASessionsJson := '';
   AError := '';
 
-  (* v4.0: no client_name filter. The server implicitly filters by
-     the caller's UID, so the client only sees its own sessions. *)
   joReq := TZ_JsonObject.Create;
   try
     reqBytes := joReq.ToBytes;
@@ -1559,12 +1106,6 @@ begin
     DisposeObject(joResp);
   end;
 end;
-
-(* ----------------------------------------------------------------------------
-  Generate (no attachments)
-
-  v4.0: no client_name field.
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.Generate(const AContent, APrompt: string; var ASessionId: string; out AError: string): boolean;
 var
@@ -1625,12 +1166,6 @@ begin
     DisposeObject(joResp);
   end;
 end;
-
-(* ----------------------------------------------------------------------------
-  Generate (with attachments)
-
-  v4.0: no client_name field.
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GenerateWithAttachments(const AContent, APrompt: string; const ATexts: TLLMTextAttachmentArray;
   const AImages: TLLMImageAttachmentArray; var ASessionId: string; out AError: string): boolean;
@@ -1745,8 +1280,6 @@ begin
       try
         Decoded := TEncoding.UTF8.GetString(rawBytes);
       except
-        (* Fall back to GBK (code page 936); if that also fails,
-           treat the bytes as Latin-1 by copy. *)
         try
           Decoded := TEncoding.GetEncoding(936).GetString(rawBytes);
         except
@@ -1835,24 +1368,6 @@ begin
   Result := Generate(AContent, APrompt, sid, AError);
 end;
 
-(* ----------------------------------------------------------------------------
-  Structured Output - byte-safe primary interface
-
-  Z.Json safety notes
-  -------------------
-  The original implementation called Parae on a grandchild of joReq:
-
-      joResponseFormat := joReq.O['options'].O['response_format'];
-      joResponseFormat.Parae(AResponseFormatJsonBytes);   // BROKEN
-
-  The fix parses the response_format on a STANDALONE root (joSchema),
-  then appends the "options":{"response_format":<schemaJson>} fragment
-  to the serialized request via string concatenation. This never
-  touches any child node pointer.
-
-  v4.0: no client_name field.
-  ---------------------------------------------------------------------------- *)
-
 function TLLMClient.GenerateStructured(const AContent, APrompt: string; const AResponseFormatJsonBytes: TBytes;
   var ASessionId: string; out AError: string): boolean;
 var
@@ -1876,7 +1391,6 @@ begin
     Exit;
   end;
 
-  // ---- Pre-parse response_format on a standalone root ----
   joSchema := TZ_JsonObject.Create;
   try
     if not joSchema.Parae(AResponseFormatJsonBytes) then
@@ -1889,7 +1403,6 @@ begin
     DisposeObject(joSchema);
   end;
 
-  // ---- Build the request ----
   joReq := TZ_JsonObject.Create;
   try
     joReq.S['content'] := AContent;
@@ -2117,16 +1630,6 @@ begin
     DisposeObject(joResp);
   end;
 end;
-
-(* ----------------------------------------------------------------------------
-  Capability discovery
-
-  Z.Json safety note: FCapabilities is created as a fresh root
-  (TZ_JsonObject.Create), and Assign targets it as the destination.
-  Assign only calls SaveToStream on the source and LoadFromStream on
-  the destination root, so the source child node of joResp is never
-  mutated.
-  ---------------------------------------------------------------------------- *)
 
 function TLLMClient.GetAPICapabilities(var ACapabilitiesJson: TZ_JsonString; out AError: string): boolean;
 var
